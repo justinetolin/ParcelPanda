@@ -1,20 +1,20 @@
 #include <Arduino.h>
-#include <Keypad.h>
-#include <LiquidCrystal_I2C.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
-#include <Wire.h>
+#include <hidboot.h>
+#include <usbhub.h>
 
 // ! VARIABLE & PIN DEFINITIONS
-#define BUZZER_PIN 13
-#define CSpin 53
+#define BUZZER_PIN 3
+#define CSpin 4
 #define parDoorPin 10
 #define monDoorPin 11
 #define bluetoothState 44
 #define hallSensorPin A0
 String User[4] = {"TRACKING", "+639915176440", "false", "123456"};
 bool availability = true;
+bool received = false;
 int parDoorAngle = 0;
 int monDoorAngle = 0;
 const int maxOpenAngle = 180;
@@ -24,6 +24,8 @@ const int adminPins[2] = {24, 25};
 const int detectionThreshold = 250;
 int _timeout;
 String _buffer;
+String barcodeData = "";
+bool barcodeComplete = false;
 
 // ! MILLIS: TASKS PREVIOUS TIMES & INTERVALS
 unsigned long prevTime_T1 = millis();
@@ -38,16 +40,53 @@ unsigned long interval_T3 = 1000;
 unsigned long interval_T4 = 100;
 unsigned long interval_T5 = 1000;
 
-// ! CLASSES DEFINITIONS
+// ! CLASSES/OBJECTS DEFINITIONS
 File myFile;
 Servo parDoorServo;
 Servo monDoorServo;
 Servo adminDoorServo;
+USB Usb;
+HIDBoot<USB_HID_PROTOCOL_KEYBOARD> HidKeyboard(&Usb);
+
+class CustomKeyboardParser : public HIDReportParser {
+ public:
+  void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) override {
+    for (uint8_t i = 2; i < len; i++) {
+      if (buf[i] > 0) {
+        char c = convertKeyCode(buf[i]);
+        if (c) {
+          if (c == '\n') {
+            // End of barcode detected
+            barcodeComplete = true;
+          } else {
+            // Append character to barcode data
+            barcodeData += c;
+          }
+        }
+      }
+    }
+  }
+
+ private:
+  char convertKeyCode(uint8_t key) {
+    // Map keycodes to characters
+    if (key >= 0x04 && key <= 0x1D) {         // Letters (A-Z)
+      return 'a' + key - 0x04;                // Convert to lowercase letters
+    } else if (key >= 0x1E && key <= 0x27) {  // Numbers (0-9)
+      return '0' + key - 0x1E;
+    } else if (key == 0x28) {  // Enter key
+      return '\n';
+    } else if (key == 0x2C) {  // Space
+      return ' ';
+    }
+    return 0;  // Ignore other keys
+  }
+} customParser;
 
 // buzzer tones
 const uint16_t success[] PROGMEM = {100, 100, 100, 100};
 const uint16_t error[] PROGMEM = {300, 100, 100, 100};
-const uint16_t alarm[] PROGMEM = {100, 100, 100, 100, 500};
+
 const uint16_t notif[] PROGMEM = {100};
 
 // ! FUNCTION DEFINITIONS
@@ -70,19 +109,7 @@ void successTone() {
 }
 void errorTone() { playPattern(error, sizeof(error) / sizeof(error[0])); }
 void notifTone() { playPattern(notif, sizeof(notif) / sizeof(notif[0])); }
-void alarmTone(bool active) {
-  static bool isActive = false;
-  if (active) {
-    isActive = true;
-  } else {
-    isActive = false;
-    digitalWrite(BUZZER_PIN, LOW);
-    return;
-  }
-  while (isActive) {
-    playPattern(alarm, sizeof(alarm) / sizeof(alarm[0]));
-  }
-}
+void alarmTone(bool active) { digitalWrite(BUZZER_PIN, active ? HIGH : LOW); }
 
 void sysLog(const String &logMessage) {
   myFile = SD.open("LOGS.txt", FILE_WRITE);
@@ -306,6 +333,7 @@ void BoxSetup() {
       String pinResponse = NewInstance();
       Serial1.println(pinResponse);
       notifTone();
+      received = false;
     } else if (receivedData == "Clear") {
       clearUser();
       Serial1.println("Clear Success!");
@@ -399,6 +427,23 @@ String _readSerial() {
   return "";
 }
 
+String readBarcode() {
+  barcodeData = "";         // Clear previous data
+  barcodeComplete = false;  // Reset the flag
+
+  while (!barcodeComplete) {
+    Usb.Task();  // Process USB tasks
+  }
+
+  // Convert to uppercase
+  for (size_t i = 0; i < barcodeData.length(); i++) {
+    barcodeData[i] = toupper(barcodeData[i]);
+  }
+
+  barcodeComplete = false;  // Ensure it's reset for the next read
+  return barcodeData;
+}
+
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(CSpin, OUTPUT);
@@ -408,12 +453,21 @@ void setup() {
   Serial2.begin(9600);
   randomSeed(analogRead(10));
   _buffer.reserve(50);
+  SPI.begin();
+
+  if (Usb.Init() == -1) {
+    Serial.println("USB Host Shield initialization failed!");
+    while (1);  // Halt if initialization fails
+  }
+  Serial.println("USB Host Shield initialized.");
 
   if (!SD.begin(CSpin)) {
     Serial.println("SD card initialization failed.");
     while (true);
   }
   Serial.println("SD card is ready to use.");
+
+  HidKeyboard.SetReportParser(0, &customParser);
 
   parDoorServo.attach(parDoorPin);
   parDoorServo.write(parDoorAngle);
@@ -426,6 +480,44 @@ void setup() {
 
 void loop() {
   unsigned long currentTime = millis();
+
+  String scannedBarcode = readBarcode();
+  if (!received) {
+    Serial.println("Barcode Data:");
+    Serial.println(scannedBarcode);
+
+    if (User[0] == scannedBarcode) {
+      parDoor(true);
+      while (!isObjectPresent(parCompPins)) {
+        delay(500);
+      }
+      Serial.println("Parcel placed");
+      int countdown = 5;  // Countdown time in seconds
+      while (countdown > 0) {
+        Serial.print("Door will close in: ");
+        Serial.println(countdown);
+        delay(1000);  // Wait for 1 second before reducing the countdown
+        countdown--;  // Decrease countdown by 1
+      }
+      parDoor(false);
+
+      if (User[2] == "false") {
+        monDoor(true);
+        while (!isObjectPresent(monCompPins)) {
+          delay(500);
+        }
+      }
+      Serial.println("Payment retrieved.");
+      countdown = 2;  // Countdown time in seconds
+      while (countdown > 0) {
+        Serial.print("Door will close in: ");
+        Serial.println(countdown);
+        delay(1000);  // Wait for 1 second before reducing the countdown
+        countdown--;  // Decrease countdown by 1
+      }
+      monDoor(false);
+    }
+  }
 
   if (currentTime - prevTime_T1 >= interval_T1) {
     prevTime_T1 = currentTime;
@@ -444,16 +536,22 @@ void loop() {
       // wait for user response in message
       String message1 = "Your Parcel has been stolen. Alarm is turned on.";
       String message2 =
-          "Please reply 'STOP' to acknowledge the theft and stop the alarm. "
+          "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
+      String message3 =
           "You can manually input your pin in the keypad as an alternative "
           "action.";
+      Serial.println("Sending theft notification...");
       sendText(User[2], message1);
-      delay(200);
+      delay(1000);
       sendText(User[2], message2);
+      delay(1000);
+      sendText(User[2], message3);
+      delay(1000);
       callNumber(User[2]);
       delay(7000);
 
-      while (true) {
+      unsigned long waitStartTime = millis();
+      while (millis() - waitStartTime < 60000) {
         _buffer = receiveText();
         if (_buffer.equalsIgnoreCase("STOP")) {
           Serial.println("User acknowledge theft. Stopping alarm...");
@@ -461,10 +559,12 @@ void loop() {
           clearUser();
           break;
         }
+        delay(100);
       }
+      alarmTone(false);
 
       // wait for code in keypad
-    } else {
+    } else if (effectValue > detectionThreshold) {
       alarmTone(false);
     }
   }
@@ -482,11 +582,6 @@ void loop() {
       alarmTone(true);
     }
   }
-
-  // if (currentTime - prevTime_T4 >= interval_T4) {
-  //   prevTime_T4 = currentTime;
-  //   parseKeypad();
-  // }
 
   // FOR GSM DEBUGGING
   // if (Serial.available() > 0) {
