@@ -2,6 +2,7 @@
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
+#include <Wire.h>
 #include <hidboot.h>
 #include <usbhub.h>
 
@@ -26,6 +27,8 @@ int _timeout;
 String _buffer;
 String barcodeData = "";
 bool barcodeComplete = false;
+enum State { SETUP, DELIVERY, RETRIEVAL };
+State currentState = SETUP;
 
 // ! MILLIS: TASKS PREVIOUS TIMES & INTERVALS
 unsigned long prevTime_T1 = millis();
@@ -318,29 +321,6 @@ void monDoor(bool open) {
   monDoorServo.detach();
 }
 
-void BoxSetup() {
-  if (Serial1.available()) {
-    String receivedData = Serial1.readStringUntil('\n');
-    receivedData.trim();
-    Serial.println("RECEIVED: ");
-    Serial.println(receivedData);
-
-    if (receivedData == "check") {
-      Serial1.println(availabilityCheck());
-      Serial.println(availabilityCheck());
-      notifTone();
-    } else if (receivedData == "NewInstance") {
-      String pinResponse = NewInstance();
-      Serial1.println(pinResponse);
-      notifTone();
-      received = false;
-    } else if (receivedData == "Clear") {
-      clearUser();
-      Serial1.println("Clear Success!");
-    }
-  }
-}
-
 int measureDistance(int trigPin, int echoPin) {
   long totaltime;
   digitalWrite(trigPin, LOW);
@@ -428,20 +408,51 @@ String _readSerial() {
 }
 
 String readBarcode() {
-  barcodeData = "";         // Clear previous data
-  barcodeComplete = false;  // Reset the flag
-
-  while (!barcodeComplete) {
-    Usb.Task();  // Process USB tasks
+  if (!barcodeComplete) {
+    return "";
   }
+
+  String result = barcodeData;
+  barcodeData = "";
+  barcodeComplete = false;
 
   // Convert to uppercase
   for (size_t i = 0; i < barcodeData.length(); i++) {
     barcodeData[i] = toupper(barcodeData[i]);
   }
 
-  barcodeComplete = false;  // Ensure it's reset for the next read
-  return barcodeData;
+  return result;
+}
+
+void SecurityOne() {
+  String message1 = "Your Parcel has been stolen. Alarm is turned on.";
+  String message2 =
+      "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
+  String message3 =
+      "You can manually input your pin in the keypad as an alternative "
+      "action.";
+  Serial.println("Sending theft notification...");
+  sendText(User[2], message1);
+  delay(1000);
+  sendText(User[2], message2);
+  delay(1000);
+  sendText(User[2], message3);
+  delay(1000);
+  callNumber(User[2]);
+  delay(7000);
+
+  unsigned long waitStartTime = millis();
+  while (millis() - waitStartTime < 60000) {
+    _buffer = receiveText();
+    if (_buffer.equalsIgnoreCase("STOP")) {
+      Serial.println("User acknowledge theft. Stopping alarm...");
+      sendText(User[2], "Acknowledged. Stopping alarm now.");
+      clearUser();
+      break;
+    }
+    delay(100);
+  }
+  alarmTone(false);
 }
 
 void setup() {
@@ -481,47 +492,76 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
 
-  String scannedBarcode = readBarcode();
-  if (!received) {
-    Serial.println("Barcode Data:");
-    Serial.println(scannedBarcode);
+  switch (currentState) {
+    case SETUP:
+      if (Serial1.available()) {
+        String receivedData = Serial1.readStringUntil('\n');
+        receivedData.trim();
+        Serial.println("RECEIVED: ");
+        Serial.println(receivedData);
 
-    if (User[0] == scannedBarcode) {
-      parDoor(true);
-      while (!isObjectPresent(parCompPins)) {
-        delay(500);
-      }
-      Serial.println("Parcel placed");
-      int countdown = 5;  // Countdown time in seconds
-      while (countdown > 0) {
-        Serial.print("Door will close in: ");
-        Serial.println(countdown);
-        delay(1000);  // Wait for 1 second before reducing the countdown
-        countdown--;  // Decrease countdown by 1
-      }
-      parDoor(false);
-
-      if (User[2] == "false") {
-        monDoor(true);
-        while (!isObjectPresent(monCompPins)) {
-          delay(500);
+        if (receivedData == "check") {
+          Serial1.println(availabilityCheck());
+          Serial.println(availabilityCheck());
+          notifTone();
+        } else if (receivedData == "NewInstance") {
+          String pinResponse = NewInstance();
+          Serial1.println(pinResponse);
+          notifTone();
+          received = false;
+        } else if (receivedData == "Clear") {
+          clearUser();
+          Serial1.println("Clear Success!");
         }
       }
-      Serial.println("Payment retrieved.");
-      countdown = 2;  // Countdown time in seconds
-      while (countdown > 0) {
-        Serial.print("Door will close in: ");
-        Serial.println(countdown);
-        delay(1000);  // Wait for 1 second before reducing the countdown
-        countdown--;  // Decrease countdown by 1
-      }
-      monDoor(false);
-    }
-  }
+      SecurityOne();
+      currentState = DELIVERY;
+      break;
 
-  if (currentTime - prevTime_T1 >= interval_T1) {
-    prevTime_T1 = currentTime;
-    BoxSetup();
+    case DELIVERY:
+      if (currentTime - prevTime_T1 >= interval_T1) {
+        prevTime_T1 = currentTime;
+        String scannedBarcode = readBarcode();
+        if (!received) {
+          Serial.println("Barcode Data:");
+          Serial.println(scannedBarcode);
+
+          if (User[0] == scannedBarcode) {
+            parDoor(true);
+            while (!isObjectPresent(parCompPins)) {
+              delay(500);
+            }
+            Serial.println("Parcel placed");
+            int countdown = 5;  // Countdown time in seconds
+            while (countdown > 0) {
+              Serial.print("Door will close in: ");
+              Serial.println(countdown);
+              delay(1000);  // Wait for 1 second before reducing the countdown
+              countdown--;  // Decrease countdown by 1
+            }
+            parDoor(false);
+
+            if (User[2] == "false") {
+              monDoor(true);
+              while (!isObjectPresent(monCompPins)) {
+                delay(500);
+              }
+            }
+            Serial.println("Payment retrieved.");
+            countdown = 2;  // Countdown time in seconds
+            while (countdown > 0) {
+              Serial.print("Door will close in: ");
+              Serial.println(countdown);
+              delay(1000);  // Wait for 1 second before reducing the countdown
+              countdown--;  // Decrease countdown by 1
+            }
+            monDoor(false);
+          }
+        }
+      }
+      break;
+    case RETRIEVAL:
+      break;
   }
 
   if (currentTime - prevTime_T2 >= interval_T2) {
@@ -532,37 +572,7 @@ void loop() {
       // run a function with while loop waiting for user to respond to the
       // alarm until the beep stops
       alarmTone(true);
-
-      // wait for user response in message
-      String message1 = "Your Parcel has been stolen. Alarm is turned on.";
-      String message2 =
-          "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
-      String message3 =
-          "You can manually input your pin in the keypad as an alternative "
-          "action.";
-      Serial.println("Sending theft notification...");
-      sendText(User[2], message1);
-      delay(1000);
-      sendText(User[2], message2);
-      delay(1000);
-      sendText(User[2], message3);
-      delay(1000);
-      callNumber(User[2]);
-      delay(7000);
-
-      unsigned long waitStartTime = millis();
-      while (millis() - waitStartTime < 60000) {
-        _buffer = receiveText();
-        if (_buffer.equalsIgnoreCase("STOP")) {
-          Serial.println("User acknowledge theft. Stopping alarm...");
-          sendText(User[2], "Acknowledged. Stopping alarm now.");
-          clearUser();
-          break;
-        }
-        delay(100);
-      }
-      alarmTone(false);
-
+      SecurityOne();
       // wait for code in keypad
     } else if (effectValue > detectionThreshold) {
       alarmTone(false);
