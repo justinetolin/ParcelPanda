@@ -11,7 +11,7 @@
 
 // ! VARIABLE & PIN DEFINITIONS
 #define BUZZER_PIN 3
-#define CSpin 4
+#define CSpin A15
 #define parDoorPin 6
 #define monDoorPin 7
 #define bluetoothState 44
@@ -44,7 +44,7 @@ byte a = 5;
 bool value = true;
 bool isChangingPassword = false;
 bool isVerifyingOldPassword = false;
-Password password = Password(User[3]);
+Password password = Password("123456");
 byte maxPasswordLength = 6;
 byte currentPasswordLength = 0;
 const byte ROWS = 4;
@@ -55,8 +55,8 @@ char keys[ROWS][COLS] = {{'1', '2', '3', 'A'},
                          {'7', '8', '9', 'C'},
                          {'*', '0', '#', 'D'}};
 
-byte rowPins[ROWS] = {9, 8, 7, 6};
-byte colPins[COLS] = {5, 4, 3, 2};
+byte rowPins[ROWS] = {30, 31, 32, 33};
+byte colPins[COLS] = {34, 35, 36, 37};
 
 // ! MILLIS: TASKS PREVIOUS TIMES & INTERVALS
 unsigned long prevTime_T1 = millis();
@@ -351,6 +351,7 @@ String NewInstance() {
         monDoor(false);
         return User[3];  // Corrected from `readData[3]`
         // currentState = DELIVERY; // OVERRIDE FOR BUILDING
+        // Serial.println("State Switch: DELIVERY");
       }
     } else {
       return "000000";
@@ -387,6 +388,7 @@ void clearUser() {
     Serial.println("Error opening USERINFO.txt");
   }
   currentState = SETUP;
+  Serial.println("State Switch: SETUP");
 }
 
 String _readSerial() {
@@ -525,6 +527,8 @@ void SecurityOne() {
   }
 }
 
+void SecurityTwo() { Serial.println("Security Two executed successfully."); }
+
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(CSpin, OUTPUT);
@@ -535,10 +539,9 @@ void setup() {
 
   lcd.init();
   lcd.backlight();
-  lcd.setCursor(4, 0);
+  lcd.setCursor(3, 0);
   lcd.print("<INITIALIZING>");
-  delay(3000);
-  lcd.clear();
+  delay(1000);
 
   randomSeed(analogRead(10));
   _buffer.reserve(50);
@@ -548,7 +551,13 @@ void setup() {
   lcd.print("SD Card...");
   if (!SD.begin(CSpin)) {
     Serial.println("SD card initialization failed.");
-    while (true);
+    while (true) {
+      lcd.setCursor(17, 1);
+      lcd.print("X");
+      delay(500);
+      lcd.setCursor(17, 1);
+      lcd.print(" ");
+    };
   }
   Serial.println("SD card is ready to use.");
   delay(500);
@@ -559,7 +568,13 @@ void setup() {
   lcd.print("Scanner...");
   if (Usb.Init() == -1) {
     Serial.println("USB Host Shield initialization failed!");
-    while (1);
+    while (true) {
+      lcd.setCursor(17, 1);
+      lcd.print("X");
+      delay(500);
+      lcd.setCursor(17, 1);
+      lcd.print(" ");
+    };
   }
   Serial.println("USB Host Shield initialized.");
   delay(500);
@@ -576,16 +591,26 @@ void setup() {
   monDoorServo.write(monDoorAngle);
   monDoorServo.detach();
 
+  delay(3000);
   lcd.clear();
   lcd.setCursor(5, 0);
   lcd.print("Welcome to");
   lcd.setCursor(4, 1);
   lcd.print("PARCEL PANDA");
   lcd.setCursor(2, 3);
-  lcd.print("Connect to setup;")
+  lcd.print("Connect to setup;");
 }
 
 void loop() {
+  Serial.println("Loop running...");
+  Serial.print("Current state: ");
+  Serial.println(currentState);
+  currentState = RETRIEVAL;
+  Serial.print("Current state: ");
+  Serial.println(currentState);
+
+  delay(1000);
+
   unsigned long currentTime = millis();
 
   if (currentTime - prevTime_T1 >= interval_T1) {
@@ -596,85 +621,97 @@ void loop() {
   }
 
   switch (currentState) {
-    case SETUP:
-      if (Serial1.available()) {
-        String receivedData = Serial1.readStringUntil('\n');
-        receivedData.trim();
-        Serial.println("RECEIVED: ");
-        Serial.println(receivedData);
+    // case SETUP:
+    //   Serial.println("State: SETUP");
+    //   if (Serial1.available()) {
+    //     String receivedData = Serial1.readStringUntil('\n');
+    //     receivedData.trim();
+    //     Serial.println("RECEIVED: ");
+    //     Serial.println(receivedData);
 
-        if (receivedData == "check") {
-          Serial1.println(availabilityCheck());
-          Serial.println(availabilityCheck());
-          notifTone();
-        } else if (receivedData == "NewInstance") {
-          String pinResponse = NewInstance();
-          Serial1.println(pinResponse);
-          notifTone();
-          received = false;
-        } else if (receivedData == "Clear") {
-          clearUser();
-          Serial1.println("Clear Success!");
-        }
-      }
-      currentState = DELIVERY;
-      break;
+    //     if (receivedData == "check") {
+    //       Serial1.println(availabilityCheck());
+    //       Serial.println(availabilityCheck());
+    //       notifTone();
+    //     } else if (receivedData == "NewInstance") {
+    //       String pinResponse = NewInstance();
+    //       Serial1.println(pinResponse);
+    //       notifTone();
+    //       received = false;
+    //     } else if (receivedData == "Clear") {
+    //       clearUser();
+    //       Serial1.println("Clear Success!");
+    //     }
+    //   }
+    //   currentState = DELIVERY;
+    //   Serial.println("State Switch: DELIVERY");
+    //   break;
 
-    case DELIVERY:
-      // if (currentTime - prevTime_T2 >= interval_T2) {
-      //   prevTime_T2 = currentTime;
-      String scannedBarcode = readBarcode();
-      if (!received) {
-        String scannedBarcode = readBarcode();
-        if (scannedBarcode != "") {
-          Serial.println("Barcode Scanned: " + scannedBarcode);
-        } else {
-          Serial.println("No barcode data available yet.");
-        }
+    // case DELIVERY:
+    //   // if (currentTime - prevTime_T2 >= interval_T2) {
+    //   //   prevTime_T2 = currentTime;
+    //   Serial.println("Waiting for parcel tracking.");
+    //   currentState = RETRIEVAL;
+    //   Serial.println("State Switch: RETRIEVAL NA MUNA AGAD");
+    //   break;
+    //   String scannedBarcode = readBarcode();
 
-        if (User[0] == scannedBarcode) {
-          parDoor(true);
-          while (!isObjectPresent(parCompPins)) {
-            delay(500);
-          }
-          Serial.println("Parcel placed");
-          int countdown = 5;  // Countdown time in seconds
-          while (countdown > 0) {
-            Serial.print("Door will close in: ");
-            Serial.println(countdown);
-            delay(1000);  // Wait for 1 second before reducing the countdown
-            countdown--;  // Decrease countdown by 1
-          }
-          parDoor(false);
+    //   if (!received) {
+    //     String scannedBarcode = readBarcode();
+    //     if (scannedBarcode != "") {
+    //       Serial.println("Barcode Scanned: " + scannedBarcode);
+    //     } else {
+    //       Serial.println("No barcode data available yet.");
+    //     }
 
-          if (User[2] == "false") {
-            monDoor(true);
-            while (!isObjectPresent(monCompPins)) {
-              delay(500);
-            }
-          }
-          Serial.println("Payment retrieved.");
-          countdown = 2;  // Countdown time in seconds
-          while (countdown > 0) {
-            Serial.print("Door will close in: ");
-            Serial.println(countdown);
-            delay(1000);  // Wait for 1 second before reducing the countdown
-            countdown--;  // Decrease countdown by 1
-          }
-          monDoor(false);
-        }
-      }
-      // }
-      break;
+    //     if (User[0] == scannedBarcode) {
+    //       parDoor(true);
+    //       while (!isObjectPresent(parCompPins)) {
+    //         delay(500);
+    //       }
+    //       Serial.println("Parcel placed");
+    //       int countdown = 5;  // Countdown time in seconds
+    //       while (countdown > 0) {
+    //         Serial.print("Door will close in: ");
+    //         Serial.println(countdown);
+    //         delay(1000);  // Wait for 1 second before reducing the countdown
+    //         countdown--;  // Decrease countdown by 1
+    //       }
+    //       parDoor(false);
+
+    //       if (User[2] == "false") {
+    //         monDoor(true);
+    //         while (!isObjectPresent(monCompPins)) {
+    //           delay(500);
+    //         }
+    //       }
+    //       Serial.println("Payment retrieved.");
+    //       countdown = 2;  // Countdown time in seconds
+    //       while (countdown > 0) {
+    //         Serial.print("Door will close in: ");
+    //         Serial.println(countdown);
+    //         delay(1000);  // Wait for 1 second before reducing the countdown
+    //         countdown--;  // Decrease countdown by 1
+    //       }
+    //       monDoor(false);
+    //     }
+    //   }
+    //   // }
+    //   currentState = RETRIEVAL;
+    //   Serial.println("State Switch: RETREIVAL");
+    //   break;
     case RETRIEVAL:
       // Step 1: Handle PIN Entry
-      if (keypad.getKey()) {
+      Serial.println("Entered RETRIEVAL case.");
+      char key = keypad.getKey();
+      if (key != NO_KEY) {
         char pressedKey = keypad.getKey();
         static String enteredPin = "";  // Buffer for PIN entry
 
         // Check if the entered key is a digit
         if (isdigit(pressedKey)) {
           enteredPin += pressedKey;
+          lcd.clear();
           lcd.setCursor(0, 3);
           lcd.print("PIN: ");
           lcd.print(enteredPin);  // Show entered PIN on the LCD
