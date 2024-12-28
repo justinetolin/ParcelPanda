@@ -42,8 +42,6 @@ String newPasswordString;
 char newPassword[7];
 byte a = 5;
 bool value = true;
-bool isChangingPassword = false;
-bool isVerifyingOldPassword = false;
 Password password = Password("123456");
 byte maxPasswordLength = 6;
 byte currentPasswordLength = 0;
@@ -527,6 +525,75 @@ void SecurityOne() {
   }
 }
 
+void processNumberKey(char key) {}
+
+void evaluatePassword() {
+  if (password.evaluate()) {
+    digitalWrite(BUZZER_PIN, HIGH);
+    lcd.setCursor(0, 0);
+    lcd.print("Parcel Comp");
+    delay(300);
+    digitalWrite(BUZZER_PIN, LOW);
+    lcd.setCursor(17, 0);
+    lcd.print("OK");
+    parDoor(true);
+    lcd.setCursor(0, 2);
+    lcd.print("Please get your");
+    lcd.setCursor(0, 3);
+    lcd.print("parcel.");
+    while (1) {
+      if (!isObjectPresent(parCompPins)) {
+        delay(1000);
+        parDoor(false);
+        delay(500);
+        lcd.clear();
+        lcd.setCursor(0, 0);
+        lcd.print("Thanks for using");
+        lcd.setCursor(0, 1);
+        lcd.print("PARCEL PANDA!");
+        delay(2000);
+        lcd.setCursor(0, 3);
+        lcd.print("Clearing user...");
+        delay(500);
+        clearUser();
+        break;
+      }
+    }
+  } else {
+    showError();  // Show an error if the password is incorrect
+  }
+  resetPassword();  // Reset the password for the next attempt
+}
+
+void showError() {
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(200);
+  digitalWrite(BUZZER_PIN, LOW);
+  delay(200);
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(200);
+  digitalWrite(BUZZER_PIN, LOW);
+  delay(200);
+  digitalWrite(BUZZER_PIN, HIGH);
+  delay(200);
+  digitalWrite(BUZZER_PIN, LOW);
+  delay(200);
+  lcd.setCursor(0, 0);
+  lcd.print("WRONG PASSWORD!");
+  lcd.setCursor(0, 1);
+  lcd.print("PLEASE TRY AGAIN");
+  delay(2000);
+  lcd.clear();
+  a = 5;
+}
+
+void resetPassword() {
+  password.reset();
+  currentPasswordLength = 0;
+  lcd.clear();
+  a = 5;
+}
+
 void SecurityTwo() { Serial.println("Security Two executed successfully."); }
 
 void setup() {
@@ -592,13 +659,6 @@ void setup() {
   monDoorServo.detach();
 
   delay(3000);
-  lcd.clear();
-  lcd.setCursor(5, 0);
-  lcd.print("Welcome to");
-  lcd.setCursor(4, 1);
-  lcd.print("PARCEL PANDA");
-  lcd.setCursor(2, 3);
-  lcd.print("Connect to setup;");
 }
 
 void loop() {
@@ -606,10 +666,6 @@ void loop() {
   Serial.print("Current state: ");
   Serial.println(currentState);
   currentState = RETRIEVAL;
-  Serial.print("Current state: ");
-  Serial.println(currentState);
-
-  delay(1000);
 
   unsigned long currentTime = millis();
 
@@ -623,6 +679,13 @@ void loop() {
   switch (currentState) {
     // case SETUP:
     //   Serial.println("State: SETUP");
+    //   lcd.clear();
+    //   lcd.setCursor(5, 0);
+    //   lcd.print("Welcome to");
+    //   lcd.setCursor(4, 1);
+    //   lcd.print("PARCEL PANDA");
+    //   lcd.setCursor(2, 3);
+    //   lcd.print("Connect to setup;");
     //   if (Serial1.available()) {
     //     String receivedData = Serial1.readStringUntil('\n');
     //     receivedData.trim();
@@ -703,40 +766,26 @@ void loop() {
     case RETRIEVAL:
       // Step 1: Handle PIN Entry
       Serial.println("Entered RETRIEVAL case.");
+      // lcd.clear();
+      lcd.setCursor(1, 0);
+      lcd.print("Enter your PIN:");
       char key = keypad.getKey();
       if (key != NO_KEY) {
-        char pressedKey = keypad.getKey();
-        static String enteredPin = "";  // Buffer for PIN entry
+        delay(60);
+        if (key == 'C') {
+          resetPassword();
+        } else {
+          lcd.setCursor(a, 1);
+          lcd.print("*");
+          a++;
+          if (a == 11) {
+            a = 5;
+          }
+          currentPasswordLength++;
+          password.append(key);
 
-        // Check if the entered key is a digit
-        if (isdigit(pressedKey)) {
-          enteredPin += pressedKey;
-          lcd.clear();
-          lcd.setCursor(0, 3);
-          lcd.print("PIN: ");
-          lcd.print(enteredPin);  // Show entered PIN on the LCD
-        }
-
-        // If the PIN is 6 digits long, validate it
-        if (enteredPin.length() == 6) {
-          if (enteredPin == User[3]) {
-            // PIN matches, open parent door and wait for parcel removal
-            parDoor(true);
-            while (isObjectPresent(parCompPins)) {
-              delay(500);  // Keep checking if the parcel is still present
-            }
-            // Parcel has been removed, close the door
-            parDoor(false);
-            enteredPin = "";  // Reset PIN buffer
-            Serial.println("Parcel retrieved successfully.");
-          } else {
-            lcd.clear();
-            lcd.setCursor(0, 3);
-            lcd.print("Incorrect PIN.");
-            enteredPin = "";  // Reset PIN buffer
-            errorTone();      // Play error tone
-            delay(2000);      // Wait for a moment before clearing message
-            lcd.clear();
+          if (currentPasswordLength == maxPasswordLength) {
+            evaluatePassword();
           }
         }
       }
