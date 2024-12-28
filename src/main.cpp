@@ -1,4 +1,7 @@
 #include <Arduino.h>
+#include <Keypad.h>
+#include <LiquidCrystal_I2C.h>
+#include <Password.h>
 #include <SD.h>
 #include <SPI.h>
 #include <Servo.h>
@@ -9,13 +12,16 @@
 // ! VARIABLE & PIN DEFINITIONS
 #define BUZZER_PIN 3
 #define CSpin 4
-#define parDoorPin 10
-#define monDoorPin 11
+#define parDoorPin 6
+#define monDoorPin 7
 #define bluetoothState 44
 #define hallSensorPin A0
+
 String User[4] = {"TRACKING", "+639915176440", "false", "123456"};
+
 bool availability = true;
 bool received = false;
+
 int parDoorAngle = 0;
 int monDoorAngle = 0;
 const int maxOpenAngle = 180;
@@ -23,12 +29,34 @@ const int parCompPins[2] = {22, 23};
 const int monCompPins[2] = {24, 25};
 const int adminPins[2] = {24, 25};
 const int detectionThreshold = 250;
+
 int _timeout;
 String _buffer;
 String barcodeData = "";
 bool barcodeComplete = false;
+
 enum State { SETUP, DELIVERY, RETRIEVAL };
 State currentState = SETUP;
+
+String newPasswordString;
+char newPassword[7];
+byte a = 5;
+bool value = true;
+bool isChangingPassword = false;
+bool isVerifyingOldPassword = false;
+Password password = Password(User[3]);
+byte maxPasswordLength = 6;
+byte currentPasswordLength = 0;
+const byte ROWS = 4;
+const byte COLS = 4;
+
+char keys[ROWS][COLS] = {{'1', '2', '3', 'A'},
+                         {'4', '5', '6', 'B'},
+                         {'7', '8', '9', 'C'},
+                         {'*', '0', '#', 'D'}};
+
+byte rowPins[ROWS] = {9, 8, 7, 6};
+byte colPins[COLS] = {5, 4, 3, 2};
 
 // ! MILLIS: TASKS PREVIOUS TIMES & INTERVALS
 unsigned long prevTime_T1 = millis();
@@ -38,7 +66,7 @@ unsigned long prevTime_T4 = millis();
 unsigned long prevTime_T5 = millis();
 
 unsigned long interval_T1 = 3000;
-unsigned long interval_T2 = 1000;
+unsigned long interval_T2 = 200;
 unsigned long interval_T3 = 1000;
 unsigned long interval_T4 = 100;
 unsigned long interval_T5 = 1000;
@@ -48,6 +76,8 @@ File myFile;
 Servo parDoorServo;
 Servo monDoorServo;
 Servo adminDoorServo;
+LiquidCrystal_I2C lcd(0x27, 20, 4);
+Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 USB Usb;
 HIDBoot<USB_HID_PROTOCOL_KEYBOARD> HidKeyboard(&Usb);
 
@@ -122,6 +152,82 @@ void sysLog(const String &logMessage) {
     Serial.println("Log written to LOGS.txt.");
   } else {
     Serial.println("Error opening LOGS.txt for writing.");
+  }
+}
+
+void parDoor(bool open) {
+  parDoorServo.attach(parDoorPin);
+
+  if (open) {
+    parDoorAngle = maxOpenAngle;
+    Serial.println("Opening Parent Door...");
+  } else {
+    parDoorAngle = 0;
+    Serial.println("Closing Parent Door...");
+  }
+
+  for (int pos = parDoorServo.read(); pos != parDoorAngle;
+       pos += (parDoorAngle > pos ? 1 : -1)) {
+    parDoorServo.write(pos);
+    delay(15);
+  }
+  parDoorServo.detach();
+}
+
+void monDoor(bool open) {
+  monDoorServo.attach(monDoorPin);
+
+  if (open) {
+    monDoorAngle = maxOpenAngle;
+    Serial.println("Opening Monitor Door...");
+  } else {
+    monDoorAngle = 0;
+    Serial.println("Closing Monitor Door...");
+  }
+
+  // Smoothly move the servo to the target angle
+  for (int pos = monDoorServo.read(); pos != monDoorAngle;
+       pos += (monDoorAngle > pos ? 1 : -1)) {
+    monDoorServo.write(pos);
+    delay(15);  // Adjust speed of movement
+  }
+
+  monDoorServo.detach();
+}
+
+int measureDistance(int trigPin, int echoPin) {
+  long totaltime;
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  totaltime = pulseIn(echoPin, HIGH);
+  int distance = totaltime * 0.034 / 2;
+  return distance;
+}
+
+bool isObjectPresent(int sensorPins[2]) {
+  int trig = sensorPins[0];
+  int echo = sensorPins[1];
+  pinMode(trig, OUTPUT);
+  pinMode(echo, INPUT);
+
+  int distance1 = measureDistance(trig, echo);
+  delay(100);
+  int distance2 = measureDistance(trig, echo);
+
+  int diffdist = distance1 - distance2;
+  int sumdist = distance1 + distance2;
+
+  if (diffdist > 0 && distance1 > 50 && distance2 < 20) {
+    return true;  // Object placed (was far, now close)
+  } else if (diffdist < 0 && distance1, 20 && distance2 > 50) {
+    return false;  // Object removed (was close, now far)
+  } else if (sumdist < 100) {
+    return true;  // Object still present
+  } else {
+    return false;  // Object is absent
   }
 }
 
@@ -244,6 +350,7 @@ String NewInstance() {
         delay(3000);
         monDoor(false);
         return User[3];  // Corrected from `readData[3]`
+        // currentState = DELIVERY; // OVERRIDE FOR BUILDING
       }
     } else {
       return "000000";
@@ -279,82 +386,19 @@ void clearUser() {
   } else {
     Serial.println("Error opening USERINFO.txt");
   }
+  currentState = SETUP;
 }
 
-void parDoor(bool open) {
-  parDoorServo.attach(parDoorPin);
-
-  if (open) {
-    parDoorAngle = maxOpenAngle;
-    Serial.println("Opening Parent Door...");
-  } else {
-    parDoorAngle = 0;
-    Serial.println("Closing Parent Door...");
+String _readSerial() {
+  _timeout = 0;
+  while (!Serial2.available() && _timeout < 12000) {
+    delay(13);
+    _timeout++;
   }
-
-  for (int pos = parDoorServo.read(); pos != parDoorAngle;
-       pos += (parDoorAngle > pos ? 1 : -1)) {
-    parDoorServo.write(pos);
-    delay(15);
+  if (Serial2.available()) {
+    return Serial2.readString();
   }
-  parDoorServo.detach();
-}
-
-void monDoor(bool open) {
-  monDoorServo.attach(monDoorPin);
-
-  if (open) {
-    monDoorAngle = maxOpenAngle;
-    Serial.println("Opening Monitor Door...");
-  } else {
-    monDoorAngle = 0;
-    Serial.println("Closing Monitor Door...");
-  }
-
-  // Smoothly move the servo to the target angle
-  for (int pos = monDoorServo.read(); pos != monDoorAngle;
-       pos += (monDoorAngle > pos ? 1 : -1)) {
-    monDoorServo.write(pos);
-    delay(15);  // Adjust speed of movement
-  }
-
-  monDoorServo.detach();
-}
-
-int measureDistance(int trigPin, int echoPin) {
-  long totaltime;
-  digitalWrite(trigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
-  totaltime = pulseIn(echoPin, HIGH);
-  int distance = totaltime * 0.034 / 2;
-  return distance;
-}
-
-bool isObjectPresent(int sensorPins[2]) {
-  int trig = sensorPins[0];
-  int echo = sensorPins[1];
-  pinMode(trig, OUTPUT);
-  pinMode(echo, INPUT);
-
-  int distance1 = measureDistance(trig, echo);
-  delay(100);
-  int distance2 = measureDistance(trig, echo);
-
-  int diffdist = distance1 - distance2;
-  int sumdist = distance1 + distance2;
-
-  if (diffdist > 0 && distance1 > 50 && distance2 < 20) {
-    return true;  // Object placed (was far, now close)
-  } else if (diffdist < 0 && distance1, 20 && distance2 > 50) {
-    return false;  // Object removed (was close, now far)
-  } else if (sumdist < 100) {
-    return true;  // Object still present
-  } else {
-    return false;  // Object is absent
-  }
+  return "";
 }
 
 void sendText(String number, String message) {
@@ -395,64 +439,90 @@ void callNumber(String number) {
   Serial.println("Calling " + number);
 }
 
-String _readSerial() {
-  _timeout = 0;
-  while (!Serial2.available() && _timeout < 12000) {
-    delay(13);
-    _timeout++;
-  }
-  if (Serial2.available()) {
-    return Serial2.readString();
-  }
-  return "";
-}
-
 String readBarcode() {
-  if (!barcodeComplete) {
-    return "";
+  barcodeData = "";         // Clear previous data
+  barcodeComplete = false;  // Reset the flag
+  while (!barcodeComplete) {
+    Usb.Task();  // Process USB tasks
   }
-
-  String result = barcodeData;
-  barcodeData = "";
-  barcodeComplete = false;
-
   // Convert to uppercase
   for (size_t i = 0; i < barcodeData.length(); i++) {
     barcodeData[i] = toupper(barcodeData[i]);
   }
-
-  return result;
+  barcodeComplete = false;  // Ensure it's reset for the next read
+  return barcodeData;
 }
 
 void SecurityOne() {
-  String message1 = "Your Parcel has been stolen. Alarm is turned on.";
-  String message2 =
-      "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
-  String message3 =
-      "You can manually input your pin in the keypad as an alternative "
-      "action.";
-  Serial.println("Sending theft notification...");
-  sendText(User[2], message1);
-  delay(1000);
-  sendText(User[2], message2);
-  delay(1000);
-  sendText(User[2], message3);
-  delay(1000);
-  callNumber(User[2]);
-  delay(7000);
+  int effectValue = analogRead(hallSensorPin);
+  if (effectValue > detectionThreshold) {
+    // no magnetic field detected ie STOLEN
+    // run a function with while loop waiting for user to respond to the
+    // alarm until the beep stops
+    alarmTone(true);
+    String message1 = "Your Parcel has been stolen. Alarm is turned on.";
+    String message2 =
+        "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
+    String message3 =
+        "You can manually input your pin in the keypad as an alternative "
+        "action.";
+    Serial.println("Sending theft notification...");
+    sendText(User[1], message1);
+    delay(1000);
+    sendText(User[1], message2);
+    delay(1000);
+    sendText(User[1], message3);
+    delay(1000);
+    callNumber(User[1]);
+    delay(7000);
 
-  unsigned long waitStartTime = millis();
-  while (millis() - waitStartTime < 60000) {
-    _buffer = receiveText();
-    if (_buffer.equalsIgnoreCase("STOP")) {
-      Serial.println("User acknowledge theft. Stopping alarm...");
-      sendText(User[2], "Acknowledged. Stopping alarm now.");
-      clearUser();
-      break;
+    unsigned long waitStartTime = millis();
+    while (millis() - waitStartTime < 60000) {
+      _buffer = receiveText();
+      if (_buffer.equalsIgnoreCase("STOP")) {
+        // User acknowledged the theft and wants to stop the alarm
+        Serial.println("User acknowledge theft. Stopping alarm...");
+        sendText(User[2], "Acknowledged. Stopping alarm now.");
+        clearUser();
+        alarmTone(false);
+        break;
+      }
+
+      // Also listen for PIN input on the keypad during alarm
+      if (keypad.getKey()) {
+        char pressedKey = keypad.getKey();
+        static String enteredPin = "";  // Buffer for PIN entry
+
+        if (isdigit(pressedKey)) {
+          enteredPin += pressedKey;
+        }
+
+        // If the PIN is 6 digits long, check if it matches
+        if (enteredPin.length() == 6) {
+          if (enteredPin == User[3]) {
+            // Stop the alarm and reset the system if PIN matches
+            Serial.println("PIN entered, stopping alarm...");
+            sendText(User[2], "PIN entered. Stopping alarm now.");
+            clearUser();
+            alarmTone(false);
+            enteredPin = "";  // Reset PIN buffer
+            break;
+          } else {
+            lcd.clear();
+            lcd.setCursor(0, 3);
+            lcd.print("Incorrect PIN.");
+            enteredPin = "";  // Reset PIN buffer
+            errorTone();
+            delay(2000);
+            lcd.clear();
+          }
+        }
+      }
+      delay(100);  // Small delay to prevent excessive CPU usage
     }
-    delay(100);
+  } else {
+    alarmTone(false);
   }
-  alarmTone(false);
 }
 
 void setup() {
@@ -462,21 +532,39 @@ void setup() {
   Serial.begin(9600);
   Serial1.begin(9600);
   Serial2.begin(9600);
+
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(4, 0);
+  lcd.print("<INITIALIZING>");
+  delay(3000);
+  lcd.clear();
+
   randomSeed(analogRead(10));
   _buffer.reserve(50);
   SPI.begin();
 
-  if (Usb.Init() == -1) {
-    Serial.println("USB Host Shield initialization failed!");
-    while (1);  // Halt if initialization fails
-  }
-  Serial.println("USB Host Shield initialized.");
-
+  lcd.setCursor(0, 1);
+  lcd.print("SD Card...");
   if (!SD.begin(CSpin)) {
     Serial.println("SD card initialization failed.");
     while (true);
   }
   Serial.println("SD card is ready to use.");
+  delay(500);
+  lcd.setCursor(17, 1);
+  lcd.print("OK");
+
+  lcd.setCursor(0, 2);
+  lcd.print("Scanner...");
+  if (Usb.Init() == -1) {
+    Serial.println("USB Host Shield initialization failed!");
+    while (1);
+  }
+  Serial.println("USB Host Shield initialized.");
+  delay(500);
+  lcd.setCursor(17, 2);
+  lcd.print("OK");
 
   HidKeyboard.SetReportParser(0, &customParser);
 
@@ -487,10 +575,25 @@ void setup() {
   monDoorServo.attach(monDoorPin);
   monDoorServo.write(monDoorAngle);
   monDoorServo.detach();
+
+  lcd.clear();
+  lcd.setCursor(5, 0);
+  lcd.print("Welcome to");
+  lcd.setCursor(4, 1);
+  lcd.print("PARCEL PANDA");
+  lcd.setCursor(2, 3);
+  lcd.print("Connect to setup;")
 }
 
 void loop() {
   unsigned long currentTime = millis();
+
+  if (currentTime - prevTime_T1 >= interval_T1) {
+    prevTime_T1 = currentTime;
+
+    SecurityOne();
+    // wait for code in keypad
+  }
 
   switch (currentState) {
     case SETUP:
@@ -514,109 +617,98 @@ void loop() {
           Serial1.println("Clear Success!");
         }
       }
-      SecurityOne();
       currentState = DELIVERY;
       break;
 
     case DELIVERY:
-      if (currentTime - prevTime_T1 >= interval_T1) {
-        prevTime_T1 = currentTime;
+      // if (currentTime - prevTime_T2 >= interval_T2) {
+      //   prevTime_T2 = currentTime;
+      String scannedBarcode = readBarcode();
+      if (!received) {
         String scannedBarcode = readBarcode();
-        if (!received) {
-          Serial.println("Barcode Data:");
-          Serial.println(scannedBarcode);
+        if (scannedBarcode != "") {
+          Serial.println("Barcode Scanned: " + scannedBarcode);
+        } else {
+          Serial.println("No barcode data available yet.");
+        }
 
-          if (User[0] == scannedBarcode) {
-            parDoor(true);
-            while (!isObjectPresent(parCompPins)) {
+        if (User[0] == scannedBarcode) {
+          parDoor(true);
+          while (!isObjectPresent(parCompPins)) {
+            delay(500);
+          }
+          Serial.println("Parcel placed");
+          int countdown = 5;  // Countdown time in seconds
+          while (countdown > 0) {
+            Serial.print("Door will close in: ");
+            Serial.println(countdown);
+            delay(1000);  // Wait for 1 second before reducing the countdown
+            countdown--;  // Decrease countdown by 1
+          }
+          parDoor(false);
+
+          if (User[2] == "false") {
+            monDoor(true);
+            while (!isObjectPresent(monCompPins)) {
               delay(500);
             }
-            Serial.println("Parcel placed");
-            int countdown = 5;  // Countdown time in seconds
-            while (countdown > 0) {
-              Serial.print("Door will close in: ");
-              Serial.println(countdown);
-              delay(1000);  // Wait for 1 second before reducing the countdown
-              countdown--;  // Decrease countdown by 1
-            }
-            parDoor(false);
+          }
+          Serial.println("Payment retrieved.");
+          countdown = 2;  // Countdown time in seconds
+          while (countdown > 0) {
+            Serial.print("Door will close in: ");
+            Serial.println(countdown);
+            delay(1000);  // Wait for 1 second before reducing the countdown
+            countdown--;  // Decrease countdown by 1
+          }
+          monDoor(false);
+        }
+      }
+      // }
+      break;
+    case RETRIEVAL:
+      // Step 1: Handle PIN Entry
+      if (keypad.getKey()) {
+        char pressedKey = keypad.getKey();
+        static String enteredPin = "";  // Buffer for PIN entry
 
-            if (User[2] == "false") {
-              monDoor(true);
-              while (!isObjectPresent(monCompPins)) {
-                delay(500);
-              }
+        // Check if the entered key is a digit
+        if (isdigit(pressedKey)) {
+          enteredPin += pressedKey;
+          lcd.setCursor(0, 3);
+          lcd.print("PIN: ");
+          lcd.print(enteredPin);  // Show entered PIN on the LCD
+        }
+
+        // If the PIN is 6 digits long, validate it
+        if (enteredPin.length() == 6) {
+          if (enteredPin == User[3]) {
+            // PIN matches, open parent door and wait for parcel removal
+            parDoor(true);
+            while (isObjectPresent(parCompPins)) {
+              delay(500);  // Keep checking if the parcel is still present
             }
-            Serial.println("Payment retrieved.");
-            countdown = 2;  // Countdown time in seconds
-            while (countdown > 0) {
-              Serial.print("Door will close in: ");
-              Serial.println(countdown);
-              delay(1000);  // Wait for 1 second before reducing the countdown
-              countdown--;  // Decrease countdown by 1
-            }
-            monDoor(false);
+            // Parcel has been removed, close the door
+            parDoor(false);
+            enteredPin = "";  // Reset PIN buffer
+            Serial.println("Parcel retrieved successfully.");
+          } else {
+            lcd.clear();
+            lcd.setCursor(0, 3);
+            lcd.print("Incorrect PIN.");
+            enteredPin = "";  // Reset PIN buffer
+            errorTone();      // Play error tone
+            delay(2000);      // Wait for a moment before clearing message
+            lcd.clear();
           }
         }
       }
+
+      // Step 2: Active Anti-Theft Check
+      if (!isObjectPresent(parCompPins)) {
+        // If parcel is absent, invoke theft security function
+        SecurityTwo();
+      }
       break;
-    case RETRIEVAL:
-      break;
   }
-
-  if (currentTime - prevTime_T2 >= interval_T2) {
-    prevTime_T2 = currentTime;
-    int effectValue = analogRead(hallSensorPin);
-    if (effectValue > detectionThreshold) {
-      // no magnetic field detected ie STOLEN
-      // run a function with while loop waiting for user to respond to the
-      // alarm until the beep stops
-      alarmTone(true);
-      SecurityOne();
-      // wait for code in keypad
-    } else if (effectValue > detectionThreshold) {
-      alarmTone(false);
-    }
-  }
-
-  if (currentTime - prevTime_T3 >= interval_T3) {
-    prevTime_T3 = currentTime;
-    bool parComp = isObjectPresent(parCompPins);
-    if (!availability && parComp) {
-      Serial.println("PARCEL INTACT");
-    } else if (availability && !parComp) {
-      Serial.println("PARCEL INTACT");
-    } else if (!availability && !parComp) {
-      Serial.println("PARCEL STOLEN");
-      // Alarm and notif things
-      alarmTone(true);
-    }
-  }
-
-  // FOR GSM DEBUGGING
-  // if (Serial.available() > 0) {
-  //   char command = Serial.read();
-  //   if (command == 's') {
-  //     String number = "+639524882324";  // Replace with desired number
-  //     String message = "Hello, this is a test message!";
-  //     sendText(number, message);
-  //   } else if (command == 'r') {
-  //     receiveText();
-  //   } else if (command == 'c') {
-  //     String number = "+639524882324";  // Replace with desired number
-  //     callNumber(number);
-  //   }
-  // }
-
-  // // Check if there's incoming data from the GSM module
-  // if (Serial2.available() > 0) {
-  //   String reply = _readSerial();
-  //   if (reply.indexOf("ON") != -1) {
-  //     digitalWrite(BUZZER_PIN, HIGH);  // Turn on LED if "ON" is received
-  //     Serial.println("LED ON");
-  //   } else if (reply.indexOf("OFF") != -1) {
-  //     digitalWrite(BUZZER_PIN, LOW);  // Turn off LED if "OFF" is received
-  //     Serial.println("LED OFF");
-  //   }
-  // }
 }
