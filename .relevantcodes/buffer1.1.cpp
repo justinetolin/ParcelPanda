@@ -8,13 +8,9 @@
 Servo servo;
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 
-String newPasswordString;  // Hold the new password
-char newPassword[7];  // Character string of newPasswordString (6 digits + null
-                      // terminator)
 byte a = 5;
 bool value = true;
-bool isChangingPassword = false;      // Track password change mode
-bool isVerifyingOldPassword = false;  // Verify old password
+bool doorOpen = false;  // Tracks the door state: false = closed, true = open
 
 Password password = Password("123456");  // Default password: 123456
 
@@ -28,8 +24,8 @@ char keys[ROWS][COLS] = {{'1', '2', '3', 'A'},
                          {'7', '8', '9', 'C'},
                          {'*', '0', '#', 'D'}};
 
-byte rowPins[ROWS] = {9, 8, 7, 6};
-byte colPins[COLS] = {5, 4, 3, 2};
+byte rowPins[ROWS] = {30, 31, 32, 33};
+byte colPins[COLS] = {34, 35, 36, 37};
 
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
 
@@ -37,7 +33,7 @@ void setup() {
   Serial.begin(9600);
   pinMode(buzzer, OUTPUT);
   servo.attach(11);
-  servo.write(50);
+  servo.write(110);  // Start with the door locked
   lcd.init();
   lcd.backlight();
   lcd.setCursor(3, 0);
@@ -50,27 +46,13 @@ void setup() {
 
 void loop() {
   lcd.setCursor(1, 0);
-  if (isChangingPassword) {
-    if (isVerifyingOldPassword) {
-      lcd.print("ENTER OLD PASSWORD");
-    } else {
-      lcd.print("SET NEW PASSWORD");
-    }
-  } else {
-    lcd.print("ENTER PASSWORD");
-  }
+  lcd.print("ENTER PASSWORD");
 
   char key = keypad.getKey();
   if (key != NO_KEY) {
     delay(60);
     if (key == 'C') {
       resetPassword();
-    } else if (key == 'D') {
-      if (isChangingPassword) {
-        cancelPasswordChange();
-      } else {
-        startPasswordChange();
-      }
     } else {
       processNumberKey(key);
     }
@@ -87,64 +69,47 @@ void processNumberKey(char key) {
   currentPasswordLength++;
   password.append(key);
 
-  if (isChangingPassword && isVerifyingOldPassword) {
-    // Collect old password during verification
-    if (currentPasswordLength == maxPasswordLength) {
-      verifyOldPassword();
-    }
-  } else if (isChangingPassword && !isVerifyingOldPassword) {
-    // Collect new password
-    newPasswordString += key;
-    if (currentPasswordLength == maxPasswordLength) {
-      finalizePasswordChange();
-    }
-  } else {
-    // Normal password evaluation
-    if (currentPasswordLength == maxPasswordLength) {
-      doorlocked();
-      dooropen();
-    }
+  if (currentPasswordLength == maxPasswordLength) {
+    evaluatePassword();  // Evaluate and handle the password
   }
 }
 
-void dooropen() {
-  if (password.evaluate()) {
-    digitalWrite(buzzer, HIGH);
-    delay(300);
-    digitalWrite(buzzer, LOW);
-    servo.write(50);
-    delay(100);
-    lcd.setCursor(0, 0);
-    lcd.print("CORRECT PASSWORD");
-    lcd.setCursor(0, 1);
-    lcd.print("OPEN THE DOOR...");
-    delay(2000);
-    lcd.clear();
-    a = 5;
+void evaluatePassword() {
+  if (password.evaluate()&&) {
+    toggleDoor();  // Toggle door state when password is correct
   } else {
-    showError();
+    showError();  // Show an error if the password is incorrect
   }
-  resetPassword();
+  resetPassword();  // Reset the password for the next attempt
 }
 
-void doorlocked() {
-  if (password.evaluate()) {
+void toggleDoor() {
+  if (doorOpen) {
+    // Close the door
     digitalWrite(buzzer, HIGH);
     delay(300);
     digitalWrite(buzzer, LOW);
-    servo.write(110);
-    delay(100);
+    servo.write(180);  // Move servo to locked position
     lcd.setCursor(0, 0);
-    lcd.print("CORRECT PASSWORD");
-    lcd.setCursor(2, 1);
     lcd.print("DOOR LOCKED");
-    delay(2000);
-    lcd.clear();
-    a = 5;
+    lcd.setCursor(0, 1);
+    lcd.print("SECURELY CLOSED");
+    doorOpen = false;
   } else {
-    showError();
+    // Open the door
+    digitalWrite(buzzer, HIGH);
+    delay(300);
+    digitalWrite(buzzer, LOW);
+    servo.write(0);  // Move servo to open position
+    lcd.setCursor(0, 0);
+    lcd.print("DOOR OPENED");
+    lcd.setCursor(0, 1);
+    lcd.print("WELCOME IN!");
+    doorOpen = true;
   }
-  resetPassword();
+  delay(2000);
+  lcd.clear();
+  a = 5;
 }
 
 void showError() {
@@ -172,61 +137,6 @@ void showError() {
 void resetPassword() {
   password.reset();
   currentPasswordLength = 0;
-  newPasswordString = "";  // Reset new password string
   lcd.clear();
   a = 5;
-}
-
-void startPasswordChange() {
-  resetPassword();
-  isChangingPassword = true;
-  isVerifyingOldPassword = true;
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("ENTER OLD PASS:");
-}
-
-void verifyOldPassword() {
-  if (password.evaluate()) {
-    isVerifyingOldPassword = false;
-    resetPassword();
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("SET NEW PASS:");
-  } else {
-    showError();
-    cancelPasswordChange();
-  }
-}
-
-void finalizePasswordChange() {
-  if (newPasswordString.length() == maxPasswordLength) {
-    newPasswordString.toCharArray(
-        newPassword, maxPasswordLength + 1);  // Convert string to char array
-    password.set(newPassword);                // Set the new password
-    isChangingPassword = false;
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Password changed");
-    delay(2000);
-    resetPassword();
-  } else {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("INVALID PASSWORD");
-    lcd.setCursor(0, 1);
-    lcd.print("MUST BE 6 DIGITS");
-    delay(2000);
-    startPasswordChange();
-  }
-}
-
-void cancelPasswordChange() {
-  isChangingPassword = false;
-  isVerifyingOldPassword = false;
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("CHANGE CANCELED");
-  delay(2000);
-  resetPassword();
 }
