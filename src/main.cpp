@@ -16,11 +16,15 @@
 #define monDoorPin 7
 #define bluetoothState 44
 #define hallSensorPin A0
+#define resetFunc() asm volatile("jmp 0")
 
 String User[4] = {"TRACKING", "+639915176440", "false", "123456"};
 
 bool availability = true;
 bool received = false;
+bool SecLVL1 = false;
+bool alerted = false;
+int effectValue;
 
 int parDoorAngle = 0;
 int monDoorAngle = 0;
@@ -35,8 +39,9 @@ String _buffer;
 String barcodeData = "";
 bool barcodeComplete = false;
 
-enum State { SETUP, DELIVERY, RETRIEVAL };
+enum State { SETUP = 0, DELIVERY = 1, RETRIEVAL = 2 };
 State currentState = SETUP;
+bool isRetrieval = false;
 
 String newPasswordString;
 char newPassword[7];
@@ -56,7 +61,10 @@ char keys[ROWS][COLS] = {{'1', '2', '3', 'A'},
 byte rowPins[ROWS] = {30, 31, 32, 33};
 byte colPins[COLS] = {34, 35, 36, 37};
 
+const byte bell[8] = {0x04, 0x0E, 0x0E, 0x0E, 0x1F, 0x00, 0x04, 0x00};
+
 // ! MILLIS: TASKS PREVIOUS TIMES & INTERVALS
+unsigned long currentTime;
 unsigned long prevTime_T1 = millis();
 unsigned long prevTime_T2 = millis();
 unsigned long prevTime_T3 = millis();
@@ -64,10 +72,13 @@ unsigned long prevTime_T4 = millis();
 unsigned long prevTime_T5 = millis();
 
 unsigned long interval_T1 = 3000;
-unsigned long interval_T2 = 200;
-unsigned long interval_T3 = 1000;
+unsigned long interval_T2 = 2000;
+unsigned long interval_T3 = 100;
 unsigned long interval_T4 = 100;
-unsigned long interval_T5 = 1000;
+unsigned long interval_T5 = 30000;
+
+int notificationStep = 0;
+bool notificationInProgress = false;
 
 // ! CLASSES/OBJECTS DEFINITIONS
 File myFile;
@@ -347,9 +358,16 @@ String NewInstance() {
         }
         delay(3000);
         monDoor(false);
-        return User[3];  // Corrected from `readData[3]`
         // currentState = DELIVERY; // OVERRIDE FOR BUILDING
         // Serial.println("State Switch: DELIVERY");
+        newPasswordString = User[3];
+        newPasswordString.toCharArray(
+            newPassword,
+            maxPasswordLength + 1);  // Convert string to char array
+        password.set(newPassword);
+        currentState = DELIVERY;
+        Serial.println("State Switch: DELIVERY");
+        return User[3];  // Corrected from `readData[3]`
       }
     } else {
       return "000000";
@@ -389,15 +407,28 @@ void clearUser() {
   Serial.println("State Switch: SETUP");
 }
 
+// String _readSerial() {
+//   _timeout = 0;
+//   while (!Serial2.available() && _timeout < 5000) {
+//     delay(13);
+//     _timeout++;
+//   }
+//   if (Serial2.available()) {
+//     return Serial2.readString();
+//   }
+//   return "";
+// }
+
 String _readSerial() {
-  _timeout = 0;
-  while (!Serial2.available() && _timeout < 12000) {
-    delay(13);
-    _timeout++;
-  }
+  unsigned long startMillis = millis();
+  // while (!Serial2.available() && (millis() - startMillis) < 5000) {
+  //   Serial.println("readSerial returned NOTHING.");
+  // }
   if (Serial2.available()) {
+    Serial.println("readSerial returned DATA.");
     return Serial2.readString();
   }
+  Serial.println("readSerial returned NOTHING.");
   return "";
 }
 
@@ -453,79 +484,20 @@ String readBarcode() {
   return barcodeData;
 }
 
-void SecurityOne() {
-  int effectValue = analogRead(hallSensorPin);
-  if (effectValue > detectionThreshold) {
-    // no magnetic field detected ie STOLEN
-    // run a function with while loop waiting for user to respond to the
-    // alarm until the beep stops
-    alarmTone(true);
-    String message1 = "Your Parcel has been stolen. Alarm is turned on.";
-    String message2 =
-        "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
-    String message3 =
-        "You can manually input your pin in the keypad as an alternative "
-        "action.";
-    Serial.println("Sending theft notification...");
-    sendText(User[1], message1);
-    delay(1000);
-    sendText(User[1], message2);
-    delay(1000);
-    sendText(User[1], message3);
-    delay(1000);
-    callNumber(User[1]);
-    delay(7000);
+void processNumberKey(char key) {
+  lcd.setCursor(a, 1);
+  lcd.print("*");
+  a++;
+  if (a == 11) {
+    a = 5;
+  }
+  currentPasswordLength++;
+  password.append(key);
 
-    unsigned long waitStartTime = millis();
-    while (millis() - waitStartTime < 60000) {
-      _buffer = receiveText();
-      if (_buffer.equalsIgnoreCase("STOP")) {
-        // User acknowledged the theft and wants to stop the alarm
-        Serial.println("User acknowledge theft. Stopping alarm...");
-        sendText(User[2], "Acknowledged. Stopping alarm now.");
-        clearUser();
-        alarmTone(false);
-        break;
-      }
-
-      // Also listen for PIN input on the keypad during alarm
-      if (keypad.getKey()) {
-        char pressedKey = keypad.getKey();
-        static String enteredPin = "";  // Buffer for PIN entry
-
-        if (isdigit(pressedKey)) {
-          enteredPin += pressedKey;
-        }
-
-        // If the PIN is 6 digits long, check if it matches
-        if (enteredPin.length() == 6) {
-          if (enteredPin == User[3]) {
-            // Stop the alarm and reset the system if PIN matches
-            Serial.println("PIN entered, stopping alarm...");
-            sendText(User[2], "PIN entered. Stopping alarm now.");
-            clearUser();
-            alarmTone(false);
-            enteredPin = "";  // Reset PIN buffer
-            break;
-          } else {
-            lcd.clear();
-            lcd.setCursor(0, 3);
-            lcd.print("Incorrect PIN.");
-            enteredPin = "";  // Reset PIN buffer
-            errorTone();
-            delay(2000);
-            lcd.clear();
-          }
-        }
-      }
-      delay(100);  // Small delay to prevent excessive CPU usage
-    }
-  } else {
-    alarmTone(false);
+  if (currentPasswordLength == maxPasswordLength) {
+    evaluatePassword();
   }
 }
-
-void processNumberKey(char key) {}
 
 void evaluatePassword() {
   if (password.evaluate()) {
@@ -594,7 +566,88 @@ void resetPassword() {
   a = 5;
 }
 
-void SecurityTwo() { Serial.println("Security Two executed successfully."); }
+void SecurityOne() {
+  lcd.setCursor(0, 3);
+  lcd.write(byte(0));
+  lcd.setCursor(2, 3);
+  lcd.print("SECURITY LEVEL 1");
+  lcd.setCursor(19, 3);
+  lcd.write(byte(0));
+
+  effectValue = analogRead(hallSensorPin);
+  if (effectValue > detectionThreshold && !alerted) {
+    lcd.setCursor(0, 2);
+    lcd.print("Notifying user...");
+    // no magnetic field detected ie STOLEN
+    // run a function with while loop waiting for user to respond to the
+    // alarm until the beep stops
+    alarmTone(true);
+    String message1 = "Entire box has been stolen. Alarm is turned on.";
+    String message2 =
+        "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
+    String message3 =
+        "You can manually input your pin in the keypad as an alternative.";
+    Serial.println("Sending theft notification...");
+    if (currentTime - prevTime_T2 >= interval_T2) {
+      prevTime_T2 = currentTime;
+      sendText(User[1], message1);
+      Serial.println("Message 1 sent.");
+      delay(2000);
+      sendText(User[1], message2);
+      Serial.println("Message 2 sent.");
+      delay(2000);
+      sendText(User[1], message3);
+      Serial.println("Message 3 sent.");
+      delay(2000);
+      // callNumber(User[1]);
+      Serial.println("Calling user...");
+      delay(7000);
+      alerted = true;
+      lcd.setCursor(0, 2);
+      lcd.print("   User notified");
+    }
+  }
+}
+
+void SecurityTwo() {
+  Serial.println("Security Two executed successfully.");
+  lcd.setCursor(0, 3);
+  lcd.write(byte(0));
+  lcd.setCursor(2, 3);
+  lcd.print("SECURITY LEVEL 2");
+  lcd.setCursor(19, 3);
+  lcd.write(byte(0));
+
+  if (!alerted) {
+    lcd.setCursor(0, 2);
+    lcd.print("Notifying user...");
+    // no magnetic field detected ie STOLEN
+    // run a function with while loop waiting for user to respond to the
+    // alarm until the beep stops
+    alarmTone(true);
+    String message1 = "Your Parcel has been stolen. Alarm is turned on.";
+    String message2 =
+        "Please reply 'STOP' to acknowledge the theft and stop the alarm.";
+    String message3 =
+        "You can manually input your pin in the keypad as an alternative.";
+    Serial.println("Sending theft notification...");
+    if (currentTime - prevTime_T2 >= interval_T2) {
+      prevTime_T2 = currentTime;
+      sendText(User[1], message1);
+      Serial.println("Message 1 sent.");
+      delay(2000);
+      sendText(User[1], message2);
+      Serial.println("Message 2 sent.");
+      delay(2000);
+      sendText(User[1], message3);
+      Serial.println("Message 3 sent.");
+      delay(2000);
+      alerted = true;
+      lcd.setCursor(0, 2);
+      lcd.print("   User notified");
+    }
+  }
+}
 
 void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
@@ -608,6 +661,7 @@ void setup() {
   lcd.backlight();
   lcd.setCursor(3, 0);
   lcd.print("<INITIALIZING>");
+  lcd.createChar(0, bell);
   delay(1000);
 
   randomSeed(analogRead(10));
@@ -659,142 +713,389 @@ void setup() {
   monDoorServo.detach();
 
   delay(3000);
+  lcd.clear();
+  lcd.setCursor(5, 0);
+  lcd.print("Welcome to");
+  lcd.setCursor(4, 1);
+  lcd.print("PARCEL PANDA");
+  lcd.setCursor(2, 3);
+  lcd.print("Connect to setup;");
+
+  if (!availabilityCheck() && !received) {
+    currentState = DELIVERY;
+    Serial.println("State Switch: DELIVERY");
+    Serial.println("Existing user detected.");
+  } else if (availabilityCheck() && !received) {
+    currentState = SETUP;
+    Serial.println("State Switch: SETUP");
+    Serial.println("No existing user detected.");
+  } else if (!availabilityCheck() && received) {
+    currentState = RETRIEVAL;
+    isRetrieval = true;
+    Serial.println("State Switch: RETRIEVAL");
+    Serial.println("Panda has received the parcel. Await retrieval.");
+  }
 }
 
 void loop() {
-  Serial.println("Loop running...");
-  Serial.print("Current state: ");
+  Serial.print("Loop running... STATE: ");
   Serial.println(currentState);
-  currentState = RETRIEVAL;
 
-  unsigned long currentTime = millis();
+  currentTime = millis();
 
   if (currentTime - prevTime_T1 >= interval_T1) {
     prevTime_T1 = currentTime;
+    effectValue = analogRead(hallSensorPin);
+    if (effectValue > detectionThreshold) {
+      lcd.clear();
+      Serial.println("SECURITY LEVEL 1 TRIGGERED");
+      while (1) {
+        SecurityOne();
+        if (Serial2.available()) {
+          String message = Serial2.readString();
 
-    SecurityOne();
-    // wait for code in keypad
+          if (message.indexOf("STOP") >= 0) {
+            // User acknowledged the theft and wants to stop the alarma
+            Serial.println("User acknowledge theft. Stopping alarm...");
+            sendText(User[2], "Acknowledged. Stopping alarm now.");
+            lcd.setCursor(0, 2);
+            lcd.print(" Resetting Panda...");
+            delay(1000);
+            clearUser();
+            alarmTone(false);
+            resetFunc();
+            break;
+          }
+        }
+
+        if (currentTime - prevTime_T3 >= interval_T3) {
+          // Also listen for PIN input on the keypad during alarm
+          lcd.setCursor(1, 0);
+          lcd.print("ENTER PASSWORD");
+          unsigned long keypadStartTime = millis();
+          if (millis() - keypadStartTime < 60000) {
+            char key = keypad.getKey();
+            if (key != NO_KEY) {
+              delay(60);
+              if (key == 'C') {
+                resetPassword();
+              } else {
+                lcd.setCursor(a, 1);
+                lcd.print("*");
+                a++;
+                if (a == 11) {
+                  a = 5;
+                }
+                currentPasswordLength++;
+                password.append(key);
+
+                if (currentPasswordLength == maxPasswordLength) {
+                  if (password.evaluate()) {
+                    Serial.println("PIN entered, stopping alarm...");
+                    sendText(User[2], "PIN entered. Stopping alarm now.");
+                    lcd.setCursor(1, 2);
+                    lcd.print("Resetting Panda...");
+                    delay(1000);
+                    clearUser();
+                    alarmTone(false);
+                    alerted = false;
+                    resetFunc();
+                    break;
+                  } else {
+                    showError();
+                    alarmTone(true);
+                  }
+                }
+              }
+            }
+          }
+          delay(100);
+        }
+      }
+    } else {
+      alarmTone(false);
+      alerted = false;
+    }
   }
 
   switch (currentState) {
-    // case SETUP:
-    //   Serial.println("State: SETUP");
-    //   lcd.clear();
-    //   lcd.setCursor(5, 0);
-    //   lcd.print("Welcome to");
-    //   lcd.setCursor(4, 1);
-    //   lcd.print("PARCEL PANDA");
-    //   lcd.setCursor(2, 3);
-    //   lcd.print("Connect to setup;");
-    //   if (Serial1.available()) {
-    //     String receivedData = Serial1.readStringUntil('\n');
-    //     receivedData.trim();
-    //     Serial.println("RECEIVED: ");
-    //     Serial.println(receivedData);
+    case SETUP:
+      Serial.println("State: SETUP");
+      lcd.setCursor(5, 0);
+      lcd.print("Welcome to");
+      lcd.setCursor(4, 1);
+      lcd.print("PARCEL PANDA");
+      lcd.setCursor(2, 3);
+      lcd.print("Connect to setup;");
+      if (Serial1.available()) {
+        String receivedData = Serial1.readStringUntil('\n');
+        receivedData.trim();
+        Serial.println("RECEIVED: ");
+        Serial.println(receivedData);
 
-    //     if (receivedData == "check") {
-    //       Serial1.println(availabilityCheck());
-    //       Serial.println(availabilityCheck());
-    //       notifTone();
-    //     } else if (receivedData == "NewInstance") {
-    //       String pinResponse = NewInstance();
-    //       Serial1.println(pinResponse);
-    //       notifTone();
-    //       received = false;
-    //     } else if (receivedData == "Clear") {
-    //       clearUser();
-    //       Serial1.println("Clear Success!");
-    //     }
-    //   }
-    //   currentState = DELIVERY;
-    //   Serial.println("State Switch: DELIVERY");
-    //   break;
+        if (receivedData == "check") {
+          Serial1.println(availabilityCheck());
+          Serial.println(availabilityCheck());
+          notifTone();
+        } else if (receivedData == "NewInstance") {
+          notifTone();
+          String pinResponse = NewInstance();
+          Serial1.println(pinResponse);
+          notifTone();
+          received = false;
+        } else if (receivedData == "Clear") {
+          clearUser();
+          Serial1.println("Clear Success!");
+        }
+      }
+      break;
 
-    // case DELIVERY:
-    //   // if (currentTime - prevTime_T2 >= interval_T2) {
-    //   //   prevTime_T2 = currentTime;
-    //   Serial.println("Waiting for parcel tracking.");
-    //   currentState = RETRIEVAL;
-    //   Serial.println("State Switch: RETRIEVAL NA MUNA AGAD");
-    //   break;
-    //   String scannedBarcode = readBarcode();
+    case DELIVERY:
+      Serial.println("Waiting for parcel tracking.");
+      // currentState = RETRIEVAL;
+      // Serial.println("State Switch: RETRIEVAL. (DEBUG PURPOSES)");
+      // break;
+      String scannedBarcode = readBarcode();
 
-    //   if (!received) {
-    //     String scannedBarcode = readBarcode();
-    //     if (scannedBarcode != "") {
-    //       Serial.println("Barcode Scanned: " + scannedBarcode);
-    //     } else {
-    //       Serial.println("No barcode data available yet.");
-    //     }
-
-    //     if (User[0] == scannedBarcode) {
-    //       parDoor(true);
-    //       while (!isObjectPresent(parCompPins)) {
-    //         delay(500);
-    //       }
-    //       Serial.println("Parcel placed");
-    //       int countdown = 5;  // Countdown time in seconds
-    //       while (countdown > 0) {
-    //         Serial.print("Door will close in: ");
-    //         Serial.println(countdown);
-    //         delay(1000);  // Wait for 1 second before reducing the countdown
-    //         countdown--;  // Decrease countdown by 1
-    //       }
-    //       parDoor(false);
-
-    //       if (User[2] == "false") {
-    //         monDoor(true);
-    //         while (!isObjectPresent(monCompPins)) {
-    //           delay(500);
-    //         }
-    //       }
-    //       Serial.println("Payment retrieved.");
-    //       countdown = 2;  // Countdown time in seconds
-    //       while (countdown > 0) {
-    //         Serial.print("Door will close in: ");
-    //         Serial.println(countdown);
-    //         delay(1000);  // Wait for 1 second before reducing the countdown
-    //         countdown--;  // Decrease countdown by 1
-    //       }
-    //       monDoor(false);
-    //     }
-    //   }
-    //   // }
-    //   currentState = RETRIEVAL;
-    //   Serial.println("State Switch: RETREIVAL");
-    //   break;
-    case RETRIEVAL:
-      // Step 1: Handle PIN Entry
-      Serial.println("Entered RETRIEVAL case.");
-      // lcd.clear();
-      lcd.setCursor(1, 0);
-      lcd.print("Enter your PIN:");
-      char key = keypad.getKey();
-      if (key != NO_KEY) {
-        delay(60);
-        if (key == 'C') {
-          resetPassword();
+      if (!received) {
+        String scannedBarcode = readBarcode();
+        if (scannedBarcode != "") {
+          Serial.println("Barcode Scanned: " + scannedBarcode);
         } else {
-          lcd.setCursor(a, 1);
-          lcd.print("*");
-          a++;
-          if (a == 11) {
-            a = 5;
-          }
-          currentPasswordLength++;
-          password.append(key);
+          Serial.println("No barcode data available yet.");
+        }
 
-          if (currentPasswordLength == maxPasswordLength) {
-            evaluatePassword();
+        if (User[0] == scannedBarcode) {
+          parDoor(true);
+          while (!isObjectPresent(parCompPins)) {
+            delay(500);
           }
+          Serial.println("Parcel placed");
+          int countdown = 5;  // Countdown time in seconds
+          while (countdown > 0) {
+            Serial.print("Door will close in: ");
+            Serial.println(countdown);
+            delay(1000);  // Wait for 1 second before reducing the
+            countdown--;  // Decrease countdown by 1
+          }
+          parDoor(false);
+
+          if (User[2] == "false") {
+            monDoor(true);
+            while (!isObjectPresent(monCompPins)) {
+              delay(500);
+            }
+          }
+          Serial.println("Payment retrieved.");
+          countdown = 2;  // Countdown time in seconds
+          while (countdown > 0) {
+            Serial.print("Door will close in: ");
+            Serial.println(countdown);
+            delay(1000);  // Wait for 1 second before reducing the
+            countdown--;  // Decrease countdown by 1
+          }
+          monDoor(false);
+          received = true;
         }
       }
 
-      // Step 2: Active Anti-Theft Check
-      if (!isObjectPresent(parCompPins)) {
-        // If parcel is absent, invoke theft security function
-        SecurityTwo();
-      }
+      currentState = RETRIEVAL;
+      lcd.clear();
+      Serial.println("State Switch: RETRIEVAL");
+      isRetrieval = true;
       break;
+
+      // case RETRIEVAL:
+      // // Step 1: Handle PIN Entry
+      // Serial.println("Entered RETRIEVAL case.");
+      // // lcd.clear();
+      // lcd.setCursor(1, 0);
+      // lcd.print("Enter your PIN:");
+      // char key = keypad.getKey();
+      // if (key != NO_KEY) {
+      //   delay(60);
+      //   if (key == 'C') {
+      //     resetPassword();
+      //   } else {
+      //     processNumberKey(key);
+      //   }
+      // }
+
+      // // Step 2: Active Anti-Theft Check
+      // if (!isObjectPresent(parCompPins)) {
+      //   // If parcel is absent, invoke theft security function
+      //   unsigned long startTime = millis();
+      //   notifTone();
+      //   while (!isObjectPresent(parCompPins)) {
+      //     if (millis() - startTime >= 5000) {
+      //       lcd.clear();
+      //       Serial.println("SECURITY LEVEL 2 ACTIVATED");
+      //       SecurityTwo();
+      //       while (1) {
+      //         if (Serial2.available()) {
+      //           String message = Serial2.readString();
+
+      //           if (message.indexOf("STOP") >= 0) {
+      //             // User acknowledged the theft and wants to stop the alarma
+      //             Serial.println("User acknowledge theft. Stopping
+      //             alarm..."); sendText(User[2], "Acknowledged. Stopping alarm
+      //             now."); lcd.setCursor(0, 2); lcd.print(" Resetting
+      //             Panda..."); delay(1000); clearUser(); alarmTone(false);
+      //             resetFunc();
+      //             break;
+      //           }
+      //         }
+
+      //         if (currentTime - prevTime_T3 >= interval_T3) {
+      //           // Also listen for PIN input on the keypad during alarm
+      //           lcd.setCursor(1, 0);
+      //           lcd.print("ENTER PASSWORD");
+      //           unsigned long keypadStartTime = millis();
+      //           if (millis() - keypadStartTime < 60000) {
+      //             char key = keypad.getKey();
+      //             if (key != NO_KEY) {
+      //               delay(60);
+      //               if (key == 'C') {
+      //                 resetPassword();
+      //               } else {
+      //                 lcd.setCursor(a, 1);
+      //                 lcd.print("*");
+      //                 a++;
+      //                 if (a == 11) {
+      //                   a = 5;
+      //                 }
+      //                 currentPasswordLength++;
+      //                 password.append(key);
+
+      //                 if (currentPasswordLength == maxPasswordLength) {
+      //                   if (password.evaluate()) {
+      //                     Serial.println("PIN entered, stopping alarm...");
+      //                     sendText(User[2], "PIN entered. Stopping alarm
+      //                     now."); lcd.setCursor(1, 2); lcd.print("Resetting
+      //                     Panda..."); delay(1000); clearUser();
+      //                     alarmTone(false);
+      //                     alerted = false;
+      //                     resetFunc();
+      //                     break;
+      //                   } else {
+      //                     showError();
+      //                     alarmTone(true);
+      //                   }
+      //                 }
+      //               }
+      //             }
+      //           }
+      //           delay(100);
+      //         }
+      //       }
+      //       break;
+      //     }
+
+      //     if (isObjectPresent(parCompPins)) {
+      //       Serial.println("Condition changed before 5 seconds. Exiting...");
+      //       break;
+      //     }
+      //   }
+      // }
+      // break;
+  }
+
+  if (isRetrieval) {
+    // Step 1: Handle PIN Entry
+    Serial.println("Entered RETRIEVAL case.");
+    // lcd.clear();
+    lcd.setCursor(1, 0);
+    lcd.print("Enter your PIN:");
+    char key = keypad.getKey();
+    if (key != NO_KEY) {
+      delay(60);
+      if (key == 'C') {
+        resetPassword();
+      } else {
+        processNumberKey(key);
+      }
+    }
+
+    // Step 2: Active Anti-Theft Check
+    if (!isObjectPresent(parCompPins)) {
+      // If parcel is absent, invoke theft security function
+      unsigned long startTime = millis();
+      notifTone();
+      while (!isObjectPresent(parCompPins)) {
+        if (millis() - startTime >= 5000) {
+          lcd.clear();
+          Serial.println("SECURITY LEVEL 2 ACTIVATED");
+          while (1) {
+            SecurityTwo();
+            if (Serial2.available()) {
+              String message = Serial2.readString();
+
+              if (message.indexOf("STOP") >= 0) {
+                // User acknowledged the theft and wants to stop the alarma
+                Serial.println("User acknowledge theft. Stopping alarm...");
+                sendText(User[2], "Acknowledged. Stopping alarm now.");
+                lcd.setCursor(0, 2);
+                lcd.print(" Resetting Panda...");
+                delay(1000);
+                clearUser();
+                alarmTone(false);
+                resetFunc();
+                break;
+              }
+            }
+
+            if (currentTime - prevTime_T3 >= interval_T3) {
+              // Also listen for PIN input on the keypad during alarm
+              lcd.setCursor(1, 0);
+              lcd.print("ENTER PASSWORD");
+              unsigned long keypadStartTime = millis();
+              if (millis() - keypadStartTime < 60000) {
+                char key = keypad.getKey();
+                if (key != NO_KEY) {
+                  delay(60);
+                  if (key == 'C') {
+                    resetPassword();
+                  } else {
+                    lcd.setCursor(a, 1);
+                    lcd.print("*");
+                    a++;
+                    if (a == 11) {
+                      a = 5;
+                    }
+                    currentPasswordLength++;
+                    password.append(key);
+
+                    if (currentPasswordLength == maxPasswordLength) {
+                      if (password.evaluate()) {
+                        Serial.println("PIN entered, stopping alarm...");
+                        sendText(User[2], "PIN entered. Stopping alarm now.");
+                        lcd.setCursor(1, 2);
+                        lcd.print("Resetting Panda...");
+                        delay(1000);
+                        clearUser();
+                        alarmTone(false);
+                        alerted = false;
+                        resetFunc();
+                        break;
+                      } else {
+                        showError();
+                        alarmTone(true);
+                      }
+                    }
+                  }
+                }
+              }
+              delay(100);
+            }
+          }
+          break;
+        }
+
+        if (isObjectPresent(parCompPins)) {
+          Serial.println("Condition changed before 5 seconds. Exiting...");
+          break;
+        }
+      }
+    }
   }
 }
