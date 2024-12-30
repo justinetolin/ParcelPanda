@@ -1,90 +1,50 @@
-#include <hidboot.h>
-#include <usbhub.h>
+#include <SoftwareSerial.h>
 
-// USB Host Shield objects
-USB Usb;
-HIDBoot<USB_HID_PROTOCOL_KEYBOARD> HidKeyboard(&Usb);
+// Define pins for GSM module
+#define RX_PIN 10
+#define TX_PIN 11
 
-// Variable to store the barcode data
-String barcodeData = "";
+// Define LED pin
+#define LED_PIN 13
 
-// Flag to indicate when a barcode scan is complete
-bool barcodeComplete = false;
-
-// Custom Keyboard Parser Class
-class CustomKeyboardParser : public HIDReportParser {
- public:
-  void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) override {
-    for (uint8_t i = 2; i < len; i++) {
-      if (buf[i] > 0) {
-        char c = convertKeyCode(buf[i]);
-        if (c) {
-          if (c == '\n') {
-            // End of barcode detected
-            barcodeComplete = true;
-          } else {
-            // Append character to barcode data
-            barcodeData += c;
-          }
-        }
-      }
-    }
-  }
-
- private:
-  char convertKeyCode(uint8_t key) {
-    // Map keycodes to characters
-    if (key >= 0x04 && key <= 0x1D) {         // Letters (A-Z)
-      return 'a' + key - 0x04;                // Convert to lowercase letters
-    } else if (key >= 0x1E && key <= 0x27) {  // Numbers (0-9)
-      return '0' + key - 0x1E;
-    } else if (key == 0x28) {  // Enter key
-      return '\n';
-    } else if (key == 0x2C) {  // Space
-      return ' ';
-    }
-    return 0;  // Ignore other keys
-  }
-} customParser;
-
-// Function to read a barcode and return it as a String
-String readBarcode() {
-  barcodeData = "";         // Clear previous data
-  barcodeComplete = false;  // Reset the flag
-
-  while (!barcodeComplete) {
-    Usb.Task();  // Process USB tasks
-  }
-
-  // Convert to uppercase
-  for (size_t i = 0; i < barcodeData.length(); i++) {
-    barcodeData[i] = toupper(barcodeData[i]);
-  }
-
-  return barcodeData;
-}
+// Create a SoftwareSerial object for GSM module communication
+SoftwareSerial gsm(RX_PIN, TX_PIN);
 
 void setup() {
-  Serial.begin(9600);
-  Serial.println("Initializing USB Host Shield...");
+  // Initialize serial communication with the GSM module
+  gsm.begin(9600);
 
-  // Initialize the USB Host Shield
-  if (Usb.Init() == -1) {
-    Serial.println("USB Host Shield initialization failed!");
-    while (1);  // Halt if initialization fails
-  }
+  // Initialize LED pin as output
+  pinMode(LED_PIN, OUTPUT);
 
-  Serial.println("USB Host Shield initialized.");
+  // Turn off the LED initially
+  digitalWrite(LED_PIN, LOW);
 
-  // Set the custom keyboard parser
-  HidKeyboard.SetReportParser(0, &customParser);
+  // Allow the GSM module to initialize
+  delay(1000);
+
+  // Send initial AT commands to set up SMS functionality
+  gsm.println("AT");  // Check communication
+  delay(1000);
+  gsm.println("AT+CMGF=1");  // Set SMS text mode
+  delay(1000);
+  gsm.println(
+      "AT+CNMI=1,2,0,0,0");  // Configure to show incoming SMS immediately
+  delay(1000);
 }
 
 void loop() {
-  Serial.println("Waiting for a barcode scan...");
+  // Check if data is available from GSM module
+  if (gsm.available()) {
+    String message = gsm.readString();  // Read the incoming SMS
 
-  // Call the readBarcode() function and print the result
-  String scannedBarcode = readBarcode();
-  Serial.println("Barcode Data:");
-  Serial.println(scannedBarcode);
+    // Check if the message contains "ON"
+    if (message.indexOf("ON") >= 0) {
+      digitalWrite(LED_PIN, HIGH);  // Turn on the LED
+    }
+    // Check if the message contains "OFF"
+    else if (message.indexOf("OFF") >= 0) {
+      digitalWrite(LED_PIN, LOW);  // Turn off the LED
+    }
+  }
 }
