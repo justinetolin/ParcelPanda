@@ -169,10 +169,10 @@ void parDoor(bool open) {
 
   if (open) {
     parDoorAngle = maxOpenAngle;
-    Serial.println("Opening Parent Door...");
+    Serial.println("Opening Parcel Door...");
   } else {
     parDoorAngle = 0;
-    Serial.println("Closing Parent Door...");
+    Serial.println("Closing Parcel Door...");
   }
 
   for (int pos = parDoorServo.read(); pos != parDoorAngle;
@@ -188,10 +188,10 @@ void monDoor(bool open) {
 
   if (open) {
     monDoorAngle = maxOpenAngle;
-    Serial.println("Opening Monitor Door...");
+    Serial.println("Opening Money Door...");
   } else {
     monDoorAngle = 0;
-    Serial.println("Closing Monitor Door...");
+    Serial.println("Closing Money Door...");
   }
 
   // Smoothly move the servo to the target angle
@@ -292,88 +292,57 @@ bool availabilityCheck() {
   return availability;
 }
 
-String NewInstance() {
-  Serial1.println("1");
-  String tempUser[3];
-  int index = 0;
-  String receivedData = "";
-
-  Serial.println("Waiting indefinitely for user data...");
-
+void receiveData(String &formData) {
   unsigned long startTime = millis();
-  while (millis() - startTime < 300000) {
+  while (millis() - startTime < 300000) {  // 5-minute timeout
     if (Serial1.available()) {
-      receivedData = Serial1.readStringUntil('\n');
-      receivedData.trim();
-      break;
+      formData = Serial1.readStringUntil('\n');
+      formData.trim();
+      return;
     }
   }
+  formData = "";  // Default to empty string if timeout occurs
+}
 
-  if (receivedData == "") {
-    Serial.println(
-        "Timeout reached: No data received for the first three values.");
-    return "000000";
-  }
+String NewInstance() {
+  Serial1.println("1");  // Notify Bluetooth module
+  Serial.println("Waiting for TRACKING ID...");
+  receiveData(User[0]);
 
-  int start = 0;
+  Serial.println("Waiting for phone number...");
+  receiveData(User[1]);
 
-  for (int i = 0; i < receivedData.length(); i++) {
-    if (receivedData[i] == ',' || receivedData[i] == '\n') {
-      tempUser[index++] = receivedData.substring(start, i);
-      start = i + 1;
-      if (index >= 3) break;
-    }
-  }
+  Serial.println("Waiting for option (true/false)...");
+  receiveData(User[2]);
 
-  for (int i = 0; i < 3; i++) {
-    User[i] = tempUser[i];
-  }
+  Serial.println("Waiting for PIN...");
+  receiveData(User[3]);
 
-  Serial.println("First three values received and stored.");
-  Serial.println("Waiting indefinitely for PIN...");
+  if (writeUser(User)) {
+    Serial.println("Data successfully written to SD card.");
 
-  String pinData = "";
-
-  startTime = millis();
-  while (millis() - startTime < 300000) {
-    if (Serial1.available()) {
-      pinData = Serial1.readStringUntil('\n');
-      pinData.trim();
-      break;
-    }
-  }
-
-  if (pinData.length() == 6) {
-    User[3] = pinData;
-
-    if (writeUser(User)) {
-      readUser(User);
-      bool option = (User[2] == "true");  // Determine if the option is true
-      if (option) {
-        return User[3];  // Corrected from `readData[3]`
-      } else {
-        monDoor(true);
-        while (!isObjectPresent(monCompPins)) {
-          delay(500);
-        }
-        delay(3000);
-        monDoor(false);
-        // currentState = DELIVERY; // OVERRIDE FOR BUILDING
-        // Serial.println("State Switch: DELIVERY");
-        newPasswordString = User[3];
-        newPasswordString.toCharArray(
-            newPassword,
-            maxPasswordLength + 1);  // Convert string to char array
-        password.set(newPassword);
-        currentState = DELIVERY;
-        Serial.println("State Switch: DELIVERY");
-        return User[3];  // Corrected from `readData[3]`
-      }
+    readUser(User);                     // Verify saved data
+    bool option = (User[2] == "true");  // Determine if the option is true
+    if (option) {
+      return User[3];
     } else {
-      return "000000";
+      monDoor(true);
+      while (!isObjectPresent(monCompPins)) {
+        delay(500);
+      }
+      delay(3000);
+      monDoor(false);
+
+      newPasswordString = User[3];
+      newPasswordString.toCharArray(
+          newPassword, maxPasswordLength + 1);  // Convert string to char array
+      password.set(newPassword);
+      currentState = DELIVERY;
+      Serial.println("State Switch: DELIVERY");
+      return User[3];
     }
   } else {
-    Serial.println("Timeout reached: PIN not received in time or invalid PIN.");
+    Serial.println("Error writing data to SD card.");
     return "000000";
   }
 }
@@ -725,6 +694,13 @@ void setup() {
     currentState = DELIVERY;
     Serial.println("State Switch: DELIVERY");
     Serial.println("Existing user detected.");
+    readUser(User);
+
+    newPasswordString = User[3];
+    newPasswordString.toCharArray(
+        newPassword, maxPasswordLength + 1);  // Convert string to char array
+    password.set(newPassword);
+    newPasswordString = "";
   } else if (availabilityCheck() && !received) {
     currentState = SETUP;
     Serial.println("State Switch: SETUP");
@@ -896,14 +872,16 @@ void loop() {
           }
           monDoor(false);
           received = true;
+          isRetrieval = true;
+          currentState = RETRIEVAL;
         }
       }
 
-      currentState = RETRIEVAL;
-      lcd.clear();
-      Serial.println("State Switch: RETRIEVAL");
-      isRetrieval = true;
-      break;
+      // currentState = RETRIEVAL;
+      // lcd.clear();
+      // Serial.println("State Switch: RETRIEVAL");
+      // isRetrieval = true;
+      // break;
 
       // case RETRIEVAL:
       // // Step 1: Handle PIN Entry
