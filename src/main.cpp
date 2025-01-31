@@ -17,6 +17,8 @@
 #define bluetoothState 44
 #define hallSensorPin A0
 #define resetFunc() asm volatile("jmp 0")
+#define photoSensorPin A1
+#define IrSensorPin 9
 
 String User[4] = {"TRACKING", "+639915176440", "false", "123456"};
 
@@ -29,10 +31,11 @@ int effectValue;
 int parDoorAngle = 0;
 int monDoorAngle = 0;
 const int maxOpenAngle = 180;
-const int parCompPins[2] = {22, 23};
-const int monCompPins[2] = {24, 25};
-const int adminPins[2] = {24, 25};
+// const int parCompPins[2] = {22, 23};
+// const int monCompPins[2] = {24, 25};
+// const int adminPins[2] = {24, 25};
 const int detectionThreshold = 250;
+const int photoThreshold = 500;
 
 int _timeout;
 String _buffer;
@@ -204,39 +207,55 @@ void monDoor(bool open) {
   monDoorServo.detach();
 }
 
-int measureDistance(int trigPin, int echoPin) {
-  long totaltime;
-  digitalWrite(trigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(trigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(trigPin, LOW);
-  totaltime = pulseIn(echoPin, HIGH);
-  int distance = totaltime * 0.034 / 2;
-  return distance;
+// int measureDistance(int trigPin, int echoPin) {
+//   long totaltime;
+//   digitalWrite(trigPin, LOW);
+//   delayMicroseconds(2);
+//   digitalWrite(trigPin, HIGH);
+//   delayMicroseconds(10);
+//   digitalWrite(trigPin, LOW);
+//   totaltime = pulseIn(echoPin, HIGH);
+//   int distance = totaltime * 0.034 / 2;
+//   return distance;
+// }
+
+// bool isObjectPresent(int sensorPins[2]) {
+//   int trig = sensorPins[0];
+//   int echo = sensorPins[1];
+//   pinMode(trig, OUTPUT);
+//   pinMode(echo, INPUT);
+
+//   int distance1 = measureDistance(trig, echo);
+//   delay(100);
+//   int distance2 = measureDistance(trig, echo);
+
+//   int diffdist = distance1 - distance2;
+//   int sumdist = distance1 + distance2;
+
+//   if (diffdist > 0 && distance1 > 50 && distance2 < 20) {
+//     return true;  // Object placed (was far, now close)
+//   } else if (diffdist < 0 && distance1, 20 && distance2 > 50) {
+//     return false;  // Object removed (was close, now far)
+//   } else if (sumdist < 100) {
+//     return true;  // Object still present
+//   } else {
+//     return false;  // Object is absent
+//   }
+// }
+
+bool isMoneyPresent() {
+  if (analogRead(photoSensorPin) < photoThreshold) {
+    return true;
+  } else {
+    return false;
+  }
 }
 
-bool isObjectPresent(int sensorPins[2]) {
-  int trig = sensorPins[0];
-  int echo = sensorPins[1];
-  pinMode(trig, OUTPUT);
-  pinMode(echo, INPUT);
-
-  int distance1 = measureDistance(trig, echo);
-  delay(100);
-  int distance2 = measureDistance(trig, echo);
-
-  int diffdist = distance1 - distance2;
-  int sumdist = distance1 + distance2;
-
-  if (diffdist > 0 && distance1 > 50 && distance2 < 20) {
-    return true;  // Object placed (was far, now close)
-  } else if (diffdist < 0 && distance1, 20 && distance2 > 50) {
-    return false;  // Object removed (was close, now far)
-  } else if (sumdist < 100) {
-    return true;  // Object still present
+bool isParcelPresent() {
+  if (analogRead(IrSensorPin) < photoThreshold) {
+    return true;
   } else {
-    return false;  // Object is absent
+    return false;
   }
 }
 
@@ -327,7 +346,7 @@ String NewInstance() {
       return User[3];
     } else {
       monDoor(true);
-      while (!isObjectPresent(monCompPins)) {
+      while (isMoneyPresent()) {
         delay(500);
       }
       delay(3000);
@@ -483,7 +502,7 @@ void evaluatePassword() {
     lcd.setCursor(0, 3);
     lcd.print("parcel.");
     while (1) {
-      if (!isObjectPresent(parCompPins)) {
+      if (!isParcelPresent()) {
         delay(1000);
         parDoor(false);
         delay(500);
@@ -843,7 +862,7 @@ void loop() {
 
         if (User[0] == scannedBarcode) {
           parDoor(true);
-          while (!isObjectPresent(parCompPins)) {
+          while (!isParcelPresent()) {
             delay(500);
           }
           Serial.println("Parcel placed");
@@ -858,7 +877,7 @@ void loop() {
 
           if (User[2] == "false") {
             monDoor(true);
-            while (!isObjectPresent(monCompPins)) {
+            while (!isParcelPresent()) {
               delay(500);
             }
           }
@@ -900,11 +919,11 @@ void loop() {
       // }
 
       // // Step 2: Active Anti-Theft Check
-      // if (!isObjectPresent(parCompPins)) {
+      // if (!isParcelPresent()) {
       //   // If parcel is absent, invoke theft security function
       //   unsigned long startTime = millis();
       //   notifTone();
-      //   while (!isObjectPresent(parCompPins)) {
+      //   while (!isParcelPresent()) {
       //     if (millis() - startTime >= 5000) {
       //       lcd.clear();
       //       Serial.println("SECURITY LEVEL 2 ACTIVATED");
@@ -969,7 +988,7 @@ void loop() {
       //       break;
       //     }
 
-      //     if (isObjectPresent(parCompPins)) {
+      //     if (isParcelPresent()) {
       //       Serial.println("Condition changed before 5 seconds. Exiting...");
       //       break;
       //     }
@@ -995,11 +1014,11 @@ void loop() {
     }
 
     // Step 2: Active Anti-Theft Check
-    if (!isObjectPresent(parCompPins)) {
+    if (!isParcelPresent()) {
       // If parcel is absent, invoke theft security function
       unsigned long startTime = millis();
       notifTone();
-      while (!isObjectPresent(parCompPins)) {
+      while (!isParcelPresent()) {
         if (millis() - startTime >= 5000) {
           lcd.clear();
           Serial.println("SECURITY LEVEL 2 ACTIVATED");
@@ -1069,7 +1088,7 @@ void loop() {
           break;
         }
 
-        if (isObjectPresent(parCompPins)) {
+        if (isParcelPresent()) {
           Serial.println("Condition changed before 5 seconds. Exiting...");
           break;
         }
