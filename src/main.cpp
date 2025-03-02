@@ -6,8 +6,6 @@
 #include <SPI.h>
 #include <Servo.h>
 #include <Wire.h>
-#include <hidboot.h>
-#include <usbhub.h>
 
 // ! VARIABLE & PIN DEFINITIONS
 #define BUZZER_PIN 3
@@ -39,8 +37,6 @@ const int photoThreshold = 500;
 
 int _timeout;
 String _buffer;
-String barcodeData = "";
-bool barcodeComplete = false;
 
 enum State { SETUP = 0, DELIVERY = 1, RETRIEVAL = 2 };
 State currentState = SETUP;
@@ -90,43 +86,6 @@ Servo monDoorServo;
 Servo adminDoorServo;
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, ROWS, COLS);
-USB Usb;
-HIDBoot<USB_HID_PROTOCOL_KEYBOARD> HidKeyboard(&Usb);
-
-class CustomKeyboardParser : public HIDReportParser {
- public:
-  void Parse(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) override {
-    for (uint8_t i = 2; i < len; i++) {
-      if (buf[i] > 0) {
-        char c = convertKeyCode(buf[i]);
-        if (c) {
-          if (c == '\n') {
-            // End of barcode detected
-            barcodeComplete = true;
-          } else {
-            // Append character to barcode data
-            barcodeData += c;
-          }
-        }
-      }
-    }
-  }
-
- private:
-  char convertKeyCode(uint8_t key) {
-    // Map keycodes to characters
-    if (key >= 0x04 && key <= 0x1D) {         // Letters (A-Z)
-      return 'a' + key - 0x04;                // Convert to lowercase letters
-    } else if (key >= 0x1E && key <= 0x27) {  // Numbers (0-9)
-      return '0' + key - 0x1E;
-    } else if (key == 0x28) {  // Enter key
-      return '\n';
-    } else if (key == 0x2C) {  // Space
-      return ' ';
-    }
-    return 0;  // Ignore other keys
-  }
-} customParser;
 
 // buzzer tones
 const uint16_t success[] PROGMEM = {100, 100, 100, 100};
@@ -459,17 +418,14 @@ void callNumber(String number) {
 }
 
 String readBarcode() {
-  barcodeData = "";         // Clear previous data
-  barcodeComplete = false;  // Reset the flag
-  while (!barcodeComplete) {
-    Usb.Task();  // Process USB tasks
+  unsigned long startTime = millis();
+  while (millis() - startTime < 300000) {  // 5-minute timeout
+    if (Serial3.available()) {
+      String buffer = Serial3.readStringUntil('\n');
+      buffer.trim();
+    }
   }
-  // Convert to uppercase
-  for (size_t i = 0; i < barcodeData.length(); i++) {
-    barcodeData[i] = toupper(barcodeData[i]);
-  }
-  barcodeComplete = false;  // Ensure it's reset for the next read
-  return barcodeData;
+  return "";  // Return empty string if timeout
 }
 
 void processNumberKey(char key) {
@@ -644,6 +600,7 @@ void setup() {
   Serial.begin(9600);
   Serial1.begin(9600);
   Serial2.begin(9600);
+  Serial3.begin(9600);
 
   lcd.init();
   lcd.backlight();
@@ -675,16 +632,6 @@ void setup() {
 
   lcd.setCursor(0, 2);
   lcd.print("Scanner...");
-  if (Usb.Init() == -1) {
-    Serial.println("USB Host Shield initialization failed!");
-    while (true) {
-      lcd.setCursor(17, 1);
-      lcd.print("X");
-      delay(500);
-      lcd.setCursor(17, 1);
-      lcd.print(" ");
-    };
-  }
   Serial.println("USB Host Shield initialized.");
   delay(500);
   lcd.setCursor(17, 2);
